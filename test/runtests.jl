@@ -38,7 +38,8 @@ using DendriteTrader
         @test validate_signal(valid) === nothing
 
         # Zero timestamp is rejected (must be > 0 per contract)
-        zero_ts = copy(valid); zero_ts["timestamp_ns"] = 0
+        zero_ts = copy(valid)
+        zero_ts["timestamp_ns"] = 0
         @test occursin("timestamp", validate_signal(zero_ts))
 
         # Missing each required field returns error
@@ -537,22 +538,26 @@ using DendriteTrader
         @testset "run_backtest with buy signals — equity curve changes" begin
             cfg = BacktestConfig(initial_balance = 10_000.0)
             signals = [
-                TradeSignal(Dict(
-                    "ticker" => "BTC-USD",
-                    "side" => "BUY",
-                    "price" => 100.0,
-                    "quantity" => 1.0,
-                    "confidence" => 0.92,
-                    "timestamp_ns" => 1_000_000_000,
-                )),
-                TradeSignal(Dict(
-                    "ticker" => "ETH-USD",
-                    "side" => "BUY",
-                    "price" => 50.0,
-                    "quantity" => 1.0,
-                    "confidence" => 0.90,
-                    "timestamp_ns" => 2_000_000_000,
-                )),
+                TradeSignal(
+                    Dict(
+                        "ticker" => "BTC-USD",
+                        "side" => "BUY",
+                        "price" => 100.0,
+                        "quantity" => 1.0,
+                        "confidence" => 0.92,
+                        "timestamp_ns" => 1_000_000_000,
+                    ),
+                ),
+                TradeSignal(
+                    Dict(
+                        "ticker" => "ETH-USD",
+                        "side" => "BUY",
+                        "price" => 50.0,
+                        "quantity" => 1.0,
+                        "confidence" => 0.90,
+                        "timestamp_ns" => 2_000_000_000,
+                    ),
+                ),
             ]
             result = run_backtest(cfg, signals)
             @test length(result.equity_curve) == 3  # initial + 2 signals
@@ -566,22 +571,26 @@ using DendriteTrader
             # max_position_size default 10.0 caps Kelly units → deterministic PnL
             cfg = BacktestConfig(initial_balance = 10_000.0)
             signals = [
-                TradeSignal(Dict(
-                    "ticker" => "BTC-USD",
-                    "side" => "BUY",
-                    "price" => 100.0,
-                    "quantity" => 1.0,
-                    "confidence" => 0.92,
-                    "timestamp_ns" => 1_000_000_000,
-                )),
-                TradeSignal(Dict(
-                    "ticker" => "BTC-USD",
-                    "side" => "SELL",
-                    "price" => 110.0,
-                    "quantity" => 1.0,
-                    "confidence" => 0.90,
-                    "timestamp_ns" => 2_000_000_000,
-                )),
+                TradeSignal(
+                    Dict(
+                        "ticker" => "BTC-USD",
+                        "side" => "BUY",
+                        "price" => 100.0,
+                        "quantity" => 1.0,
+                        "confidence" => 0.92,
+                        "timestamp_ns" => 1_000_000_000,
+                    ),
+                ),
+                TradeSignal(
+                    Dict(
+                        "ticker" => "BTC-USD",
+                        "side" => "SELL",
+                        "price" => 110.0,
+                        "quantity" => 1.0,
+                        "confidence" => 0.90,
+                        "timestamp_ns" => 2_000_000_000,
+                    ),
+                ),
             ]
             result = run_backtest(cfg, signals)
             @test result.final_balance != cfg.initial_balance
@@ -594,14 +603,16 @@ using DendriteTrader
         @testset "run_backtest with neutral signals — no trades" begin
             cfg = BacktestConfig(initial_balance = 10_000.0)
             signals = [
-                TradeSignal(Dict(
-                    "ticker" => "BTC-USD",
-                    "side" => "NEUTRAL",
-                    "price" => 100.0,
-                    "quantity" => 1.0,
-                    "confidence" => 0.92,
-                    "timestamp_ns" => 1_000_000_000,
-                )),
+                TradeSignal(
+                    Dict(
+                        "ticker" => "BTC-USD",
+                        "side" => "NEUTRAL",
+                        "price" => 100.0,
+                        "quantity" => 1.0,
+                        "confidence" => 0.92,
+                        "timestamp_ns" => 1_000_000_000,
+                    ),
+                ),
             ]
             result = run_backtest(cfg, signals)
             @test result.total_trades == 0
@@ -615,22 +626,26 @@ using DendriteTrader
                 slippage_pct = 0.5,  # 0.5% slippage
             )
             signals = [
-                TradeSignal(Dict(
-                    "ticker" => "BTC-USD",
-                    "side" => "BUY",
-                    "price" => 100.0,
-                    "quantity" => 1.0,
-                    "confidence" => 0.92,
-                    "timestamp_ns" => 1_000_000_000,
-                )),
-                TradeSignal(Dict(
-                    "ticker" => "BTC-USD",
-                    "side" => "SELL",
-                    "price" => 110.0,
-                    "quantity" => 1.0,
-                    "confidence" => 0.90,
-                    "timestamp_ns" => 2_000_000_000,
-                )),
+                TradeSignal(
+                    Dict(
+                        "ticker" => "BTC-USD",
+                        "side" => "BUY",
+                        "price" => 100.0,
+                        "quantity" => 1.0,
+                        "confidence" => 0.92,
+                        "timestamp_ns" => 1_000_000_000,
+                    ),
+                ),
+                TradeSignal(
+                    Dict(
+                        "ticker" => "BTC-USD",
+                        "side" => "SELL",
+                        "price" => 110.0,
+                        "quantity" => 1.0,
+                        "confidence" => 0.90,
+                        "timestamp_ns" => 2_000_000_000,
+                    ),
+                ),
             ]
             result = run_backtest(cfg, signals)
             # With 0.5% slippage, sell price = 110 * (1 - 0.5/100) = 109.45
@@ -650,14 +665,16 @@ using DendriteTrader
                 commission_pct = 0.1,  # 0.1% commission
             )
             signals = [
-                TradeSignal(Dict(
-                    "ticker" => "BTC-USD",
-                    "side" => "BUY",
-                    "price" => 100.0,
-                    "quantity" => 1.0,
-                    "confidence" => 0.92,
-                    "timestamp_ns" => 1_000_000_000,
-                )),
+                TradeSignal(
+                    Dict(
+                        "ticker" => "BTC-USD",
+                        "side" => "BUY",
+                        "price" => 100.0,
+                        "quantity" => 1.0,
+                        "confidence" => 0.92,
+                        "timestamp_ns" => 1_000_000_000,
+                    ),
+                ),
             ]
             result = run_backtest(cfg, signals)
             # Commission should reduce balance: units * price * 0.1%
@@ -665,28 +682,29 @@ using DendriteTrader
         end
 
         @testset "run_backtest with slippage and commission combined" begin
-            cfg = BacktestConfig(
-                initial_balance = 10_000.0,
-                slippage_pct = 0.5,
-                commission_pct = 0.1,
-            )
+            cfg =
+                BacktestConfig(initial_balance = 10_000.0, slippage_pct = 0.5, commission_pct = 0.1)
             signals = [
-                TradeSignal(Dict(
-                    "ticker" => "BTC-USD",
-                    "side" => "BUY",
-                    "price" => 100.0,
-                    "quantity" => 1.0,
-                    "confidence" => 0.92,
-                    "timestamp_ns" => 1_000_000_000,
-                )),
-                TradeSignal(Dict(
-                    "ticker" => "BTC-USD",
-                    "side" => "SELL",
-                    "price" => 110.0,
-                    "quantity" => 1.0,
-                    "confidence" => 0.90,
-                    "timestamp_ns" => 2_000_000_000,
-                )),
+                TradeSignal(
+                    Dict(
+                        "ticker" => "BTC-USD",
+                        "side" => "BUY",
+                        "price" => 100.0,
+                        "quantity" => 1.0,
+                        "confidence" => 0.92,
+                        "timestamp_ns" => 1_000_000_000,
+                    ),
+                ),
+                TradeSignal(
+                    Dict(
+                        "ticker" => "BTC-USD",
+                        "side" => "SELL",
+                        "price" => 110.0,
+                        "quantity" => 1.0,
+                        "confidence" => 0.90,
+                        "timestamp_ns" => 2_000_000_000,
+                    ),
+                ),
             ]
             result = run_backtest(cfg, signals)
             # trade_log has the sell trade only (buy-only doesn't create trade records)
@@ -699,14 +717,16 @@ using DendriteTrader
         @testset "print_summary — no errors" begin
             cfg = BacktestConfig()
             signals = [
-                TradeSignal(Dict(
-                    "ticker" => "BTC-USD",
-                    "side" => "BUY",
-                    "price" => 100.0,
-                    "quantity" => 1.0,
-                    "confidence" => 0.92,
-                    "timestamp_ns" => 1_000_000_000,
-                )),
+                TradeSignal(
+                    Dict(
+                        "ticker" => "BTC-USD",
+                        "side" => "BUY",
+                        "price" => 100.0,
+                        "quantity" => 1.0,
+                        "confidence" => 0.92,
+                        "timestamp_ns" => 1_000_000_000,
+                    ),
+                ),
             ]
             result = run_backtest(cfg, signals)
             @test_nowarn print_summary(result)
@@ -738,22 +758,26 @@ using DendriteTrader
         @testset "close PnL uses open units not exit Kelly size" begin
             cfg = BacktestConfig(initial_balance = 10_000.0, max_position_size = 1000.0)
             signals = [
-                TradeSignal(Dict(
-                    "ticker" => "BTC-USD",
-                    "side" => "BUY",
-                    "price" => 100.0,
-                    "quantity" => 1.0,
-                    "confidence" => 0.99,
-                    "timestamp_ns" => 1_000_000_000,
-                )),
-                TradeSignal(Dict(
-                    "ticker" => "BTC-USD",
-                    "side" => "SELL",
-                    "price" => 110.0,
-                    "quantity" => 1.0,
-                    "confidence" => 0.86,
-                    "timestamp_ns" => 2_000_000_000,
-                )),
+                TradeSignal(
+                    Dict(
+                        "ticker" => "BTC-USD",
+                        "side" => "BUY",
+                        "price" => 100.0,
+                        "quantity" => 1.0,
+                        "confidence" => 0.99,
+                        "timestamp_ns" => 1_000_000_000,
+                    ),
+                ),
+                TradeSignal(
+                    Dict(
+                        "ticker" => "BTC-USD",
+                        "side" => "SELL",
+                        "price" => 110.0,
+                        "quantity" => 1.0,
+                        "confidence" => 0.86,
+                        "timestamp_ns" => 2_000_000_000,
+                    ),
+                ),
             ]
             result = run_backtest(cfg, signals)
             closed = filter(t -> t.pnl != 0.0, result.trade_log)
@@ -777,14 +801,16 @@ using DendriteTrader
         @testset "short open sell slippage fills below mid" begin
             cfg = BacktestConfig(initial_balance = 10_000.0, slippage_pct = 1.0)
             signals = [
-                TradeSignal(Dict(
-                    "ticker" => "BTC-USD",
-                    "side" => "SELL",
-                    "price" => 100.0,
-                    "quantity" => 1.0,
-                    "confidence" => 0.92,
-                    "timestamp_ns" => 1_000_000_000,
-                )),
+                TradeSignal(
+                    Dict(
+                        "ticker" => "BTC-USD",
+                        "side" => "SELL",
+                        "price" => 100.0,
+                        "quantity" => 1.0,
+                        "confidence" => 0.92,
+                        "timestamp_ns" => 1_000_000_000,
+                    ),
+                ),
             ]
             result = run_backtest(cfg, signals)
             @test result.total_trades == 1
@@ -812,7 +838,6 @@ using DendriteTrader
         end
     end
 end
-
 
 @testset "strip_zmq_topic handles ASCII and multi-byte UTF-8" begin
     strip = DendriteTrader.strip_zmq_topic
@@ -848,14 +873,16 @@ end
     # Allow SUB to connect and subscription to propagate (slow joiner)
     sleep(0.5)
 
-    signal_json = JSON.json(Dict(
-        "ticker" => "BTC-USD",
-        "side" => "BUY",
-        "price" => 50_000.0,
-        "quantity" => 0.1,
-        "confidence" => 0.92,
-        "timestamp_ns" => 1_000_000_000,
-    ))
+    signal_json = JSON.json(
+        Dict(
+            "ticker" => "BTC-USD",
+            "side" => "BUY",
+            "price" => 50_000.0,
+            "quantity" => 0.1,
+            "confidence" => 0.92,
+            "timestamp_ns" => 1_000_000_000,
+        ),
+    )
 
     # Heartbeat should be filtered out by topic subscription
     ZMQ.send(pub, "heartbeat." * JSON.json(Dict("status" => "ok")))
@@ -1003,6 +1030,147 @@ end
         @test cache_size(cache) == 2
         put_cached!(cache, "A", DydxPrice("A", 1.5, 1.4, 1.6))
         @test cache_size(cache) == 2
+    end
+end
+
+@testset "ExecutionEngine event persistence" begin
+    mktempdir() do dir
+        path = joinpath(dir, "events.jsonl")
+
+        # Default engine has no log file
+        default_engine = ExecutionEngine()
+        @test default_engine.log_file === nothing
+        @test default_engine.log_io === nothing
+
+        sig = TradeSignal(
+            Dict(
+                "ticker" => "BTC-USD",
+                "side" => "BUY",
+                "price" => 100.0,
+                "quantity" => 1.0,
+                "confidence" => 0.92,
+                "timestamp_ns" => 1_000_000_000,
+            ),
+        )
+        execute_signal!(default_engine, sig, 10_000.0)
+        @test !isfile(path)
+
+        engine = ExecutionEngine(log_file = path)
+        execute_signal!(engine, sig, 10_000.0)
+
+        # Rejected signal should also be persisted
+        sig_low = TradeSignal(
+            Dict(
+                "ticker" => "BTC-USD",
+                "side" => "BUY",
+                "price" => 100.0,
+                "quantity" => 1.0,
+                "confidence" => 0.50,
+                "timestamp_ns" => 2_000_000_000,
+            ),
+        )
+        execute_signal!(engine, sig_low, 10_000.0)
+
+        close_log!(engine)
+
+        @test isfile(path)
+        loaded = load_history(path)
+        @test length(loaded) == 2
+        @test loaded[1].event_type == "executed"
+        @test loaded[1].executed
+        @test loaded[1].position_units > 0.0
+        @test loaded[1].applied_fraction > 0.0
+        @test loaded[2].event_type == "gate_reject"
+        @test !loaded[2].executed
+        @test loaded[2].reason == "confidence=0.5 < threshold=0.85"
+
+        # Round-trip equality against in-memory events
+        for (orig, ld) in zip(events(engine), loaded)
+            @test orig.event_type == ld.event_type
+            @test orig.ticker == ld.ticker
+            @test orig.confidence ≈ ld.confidence
+            @test orig.side == ld.side
+            @test orig.reason == ld.reason
+            @test orig.kelly_fraction ≈ ld.kelly_fraction
+            @test orig.latency_ns == ld.latency_ns
+            @test orig.timestamp ≈ ld.timestamp atol = 1e-6
+            @test orig.executed == ld.executed
+            @test orig.position_units ≈ ld.position_units
+            @test orig.applied_fraction ≈ ld.applied_fraction
+        end
+
+        # Truncate clears an existing log
+        engine2 = ExecutionEngine(log_file = path, truncate = true)
+        close_log!(engine2)
+        @test isfile(path)
+        @test filesize(path) == 0
+    end
+end
+
+@testset "load_history resilience" begin
+    mktempdir() do dir
+        missing_path = joinpath(dir, "missing.jsonl")
+        @test load_history(missing_path) == SignalEvent[]
+
+        empty_path = joinpath(dir, "empty.jsonl")
+        touch(empty_path)
+        @test load_history(empty_path) == SignalEvent[]
+
+        bad_path = joinpath(dir, "bad.jsonl")
+        write(
+            bad_path,
+            "not json\n\n" *
+            "{\"schema_version\":1,\"event_type\":\"x\",\"ticker\":\"T\",\"confidence\":0.5,\"side\":\"BUY\"}\n" *
+            "{\"schema_version\":99,\"event_type\":\"y\"}\n",
+        )
+        loaded = load_history(bad_path)
+        @test length(loaded) == 1
+        @test loaded[1].event_type == "x"
+        @test loaded[1].ticker == "T"
+    end
+end
+
+@testset "Backtest log_file" begin
+    mktempdir() do dir
+        path = joinpath(dir, "backtest.jsonl")
+        cfg = BacktestConfig(initial_balance = 10_000.0, log_file = path)
+        signals = [
+            TradeSignal(
+                Dict(
+                    "ticker" => "BTC-USD",
+                    "side" => "BUY",
+                    "price" => 100.0,
+                    "quantity" => 1.0,
+                    "confidence" => 0.92,
+                    "timestamp_ns" => 1_000_000_000,
+                ),
+            ),
+            TradeSignal(
+                Dict(
+                    "ticker" => "BTC-USD",
+                    "side" => "SELL",
+                    "price" => 110.0,
+                    "quantity" => 1.0,
+                    "confidence" => 0.90,
+                    "timestamp_ns" => 2_000_000_000,
+                ),
+            ),
+        ]
+        result = run_backtest(cfg, signals)
+        @test length(result.events) == 2  # two executed signals
+
+        loaded = load_history(path)
+        @test length(loaded) == 2
+        @test loaded[1].event_type == "executed"
+        @test loaded[1].executed
+        @test loaded[2].event_type == "executed"
+        @test loaded[2].executed
+
+        # run_backtest log_file kwarg overrides BacktestConfig
+        override_path = joinpath(dir, "override.jsonl")
+        run_backtest(cfg, signals; log_file = override_path)
+        @test isfile(override_path)
+        @test length(load_history(override_path)) == 2
     end
 end
 
