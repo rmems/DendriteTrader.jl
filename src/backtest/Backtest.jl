@@ -26,7 +26,17 @@ module Backtest
 
 using JSON
 using Printf
-using ..DendriteTrader: TradeSignal, TradeSide, Buy, Sell, Neutral, ExecutionEngine, execute_signal!, SignalEvent, events
+using ..DendriteTrader:
+    TradeSignal,
+    TradeSide,
+    Buy,
+    Sell,
+    Neutral,
+    ExecutionEngine,
+    execute_signal!,
+    SignalEvent,
+    events,
+    close_log!
 
 export BacktestConfig, BacktestResult
 export run_backtest, print_summary
@@ -46,6 +56,7 @@ Configuration for backtest runs.
 - `slippage_pct`: slippage percentage per trade (default 0.0)
 - `commission_pct`: commission percentage per trade (default 0.0)
 - `risk_free_rate`: annualized risk-free rate for Sharpe/Sortino (default 0.0)
+- `log_file`: optional JSON-lines event log path forwarded to `ExecutionEngine`
 """
 struct BacktestConfig
     initial_balance::Float64
@@ -55,6 +66,7 @@ struct BacktestConfig
     slippage_pct::Float64
     commission_pct::Float64
     risk_free_rate::Float64
+    log_file::Union{String, Nothing}
 end
 
 function BacktestConfig(;
@@ -65,6 +77,7 @@ function BacktestConfig(;
     slippage_pct = 0.0,
     commission_pct = 0.0,
     risk_free_rate = 0.0,
+    log_file::Union{String, Nothing} = nothing,
 )
     BacktestConfig(
         Float64(initial_balance),
@@ -74,6 +87,7 @@ function BacktestConfig(;
         Float64(slippage_pct),
         Float64(commission_pct),
         Float64(risk_free_rate),
+        log_file,
     )
 end
 
@@ -210,7 +224,7 @@ timestamps when available (>= 1 day), otherwise falls back to the number of
 equity-curve return periods (one per processed signal). The flag lets callers
 distinguish calendar days from signal counts for correct annualization.
 """
-function estimate_n_periods(signals::Vector{TradeSignal}, n_returns::Int)::Tuple{Int,Bool}
+function estimate_n_periods(signals::Vector{TradeSignal}, n_returns::Int)::Tuple{Int, Bool}
     if length(signals) >= 2
         ts_min = minimum(s.timestamp_ns for s in signals)
         ts_max = maximum(s.timestamp_ns for s in signals)
@@ -226,9 +240,11 @@ function estimate_n_periods(signals::Vector{TradeSignal}, n_returns::Int)::Tuple
 end
 
 """
-    run_backtest(config, signals) -> BacktestResult
+    run_backtest(config, signals; log_file=config.log_file) -> BacktestResult
 
 Replay signals through the ExecutionEngine and compute performance metrics.
+
+`log_file` overrides `config.log_file` if provided; pass `nothing` to disable logging.
 
 # Position model
 - Positions are tracked as `(entry_price, entry_units, is_long)`.
@@ -238,11 +254,16 @@ Replay signals through the ExecutionEngine and compute performance metrics.
   marked-to-market; metrics reflect closed round-trips only.
 - A second same-side signal while already open is ignored (first entry kept).
 """
-function run_backtest(config::BacktestConfig, signals::Vector{TradeSignal})::BacktestResult
+function run_backtest(
+    config::BacktestConfig,
+    signals::Vector{TradeSignal};
+    log_file::Union{String, Nothing} = config.log_file,
+)::BacktestResult
     engine = ExecutionEngine(
         confidence_threshold = config.confidence_threshold,
         max_position_size = config.max_position_size,
         payoff_ratio = config.payoff_ratio,
+        log_file = log_file,
     )
 
     equity_curve = Float64[config.initial_balance]
@@ -300,13 +321,8 @@ function run_backtest(config::BacktestConfig, signals::Vector{TradeSignal})::Bac
                 units = decision.position_units
                 commission = units * execution_price * (config.commission_pct / 100.0)
                 balance -= commission
-                positions[signal.ticker] = OpenPosition(
-                    execution_price,
-                    units,
-                    signal.side,
-                    commission,
-                    execution_price,
-                )
+                positions[signal.ticker] =
+                    OpenPosition(execution_price, units, signal.side, commission, execution_price)
 
                 # Long opens are silent until close; short opens logged with pnl=0
                 if signal.side == Sell
@@ -363,6 +379,8 @@ function run_backtest(config::BacktestConfig, signals::Vector{TradeSignal})::Bac
     sr = compute_sharpe_ratio(returns, config.risk_free_rate, n_periods, is_calendar_days)
     sortino = compute_sortino_ratio(returns, config.risk_free_rate, n_periods, is_calendar_days)
     calmar = compute_calmar_ratio(total_return, max_dd, n_periods, is_calendar_days)
+
+    close_log!(engine)
 
     return BacktestResult(
         config,
@@ -464,7 +482,12 @@ so the subtraction is on the same timescale as per-signal returns. The spd
 scaling cancels between numerator and denominator, making the ratio
 independent of signal frequency.
 """
-function compute_sharpe_ratio(returns::Vector{Float64}, risk_free_rate::Float64, n_periods::Int, is_calendar_days::Bool)
+function compute_sharpe_ratio(
+    returns::Vector{Float64},
+    risk_free_rate::Float64,
+    n_periods::Int,
+    is_calendar_days::Bool,
+)
     n = length(returns)
     if n < 2
         return 0.0
@@ -489,7 +512,12 @@ so the subtraction is on the same timescale as per-signal returns. The spd
 scaling cancels between numerator and denominator, making the ratio
 independent of signal frequency.
 """
-function compute_sortino_ratio(returns::Vector{Float64}, risk_free_rate::Float64, n_periods::Int, is_calendar_days::Bool)
+function compute_sortino_ratio(
+    returns::Vector{Float64},
+    risk_free_rate::Float64,
+    n_periods::Int,
+    is_calendar_days::Bool,
+)
     n = length(returns)
     if n < 2
         return 0.0
@@ -518,7 +546,12 @@ raised to a fractional power.
 When `is_calendar_days` is true, uses `365.0 / n_periods` exponent (calendar
 days -> annual). Otherwise uses `252.0 / n_periods` (trading days -> annual).
 """
-function compute_calmar_ratio(total_return::Float64, max_drawdown::Float64, n_periods::Int, is_calendar_days::Bool)
+function compute_calmar_ratio(
+    total_return::Float64,
+    max_drawdown::Float64,
+    n_periods::Int,
+    is_calendar_days::Bool,
+)
     if max_drawdown < 1e-12 || n_periods < 1 || total_return <= -100.0
         return 0.0
     end

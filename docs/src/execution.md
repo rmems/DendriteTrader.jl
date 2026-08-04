@@ -28,6 +28,8 @@ DendriteTrader.start!
 DendriteTrader.stop!
 DendriteTrader.events
 DendriteTrader.fill_rate
+DendriteTrader.load_history
+DendriteTrader.close_log!
 ```
 
 ## dYdX v4 REST Client

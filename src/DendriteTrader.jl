@@ -70,7 +70,16 @@ using JSON
 using HTTP
 using ZMQ
 
-export TradeSignal, TradeSide, Buy, Sell, Neutral, ExecutionEngine, ExecutionDecision, SignalEvent
+export TradeSignal,
+    TradeSide,
+    Buy,
+    Sell,
+    Neutral,
+    ExecutionEngine,
+    ExecutionDecision,
+    SignalEvent,
+    load_history,
+    close_log!
 export validate_signal, execute_signal!, latency_ns, passes_gate
 export DydxClient, DydxPrice, get_price, mid_price, spread_bps
 export RateLimiter, acquire!, set_rate!
@@ -246,7 +255,7 @@ end
 """
     SignalEvent
 
-Structured event for signal lifecycle tracking.
+Structured event for signal lifecycle tracking, including the resulting decision.
 """
 struct SignalEvent
     event_type::String
@@ -257,10 +266,13 @@ struct SignalEvent
     kelly_fraction::Float64
     latency_ns::Int64
     timestamp::Float64
+    executed::Bool
+    position_units::Float64
+    applied_fraction::Float64
 end
 
 """
-    SignalEvent(event_type, ticker, confidence, side; reason="", kelly_fraction=0.0, latency_ns=0)
+    SignalEvent(event_type, ticker, confidence, side; reason="", kelly_fraction=0.0, latency_ns=0, executed=false, position_units=0.0, applied_fraction=0.0)
 
 Convenience constructor for SignalEvent with default values.
 """
@@ -272,8 +284,97 @@ function SignalEvent(
     reason::String = "",
     kelly_fraction::Float64 = 0.0,
     latency_ns::Int64 = 0,
+    executed::Bool = false,
+    position_units::Float64 = 0.0,
+    applied_fraction::Float64 = 0.0,
 )
-    SignalEvent(event_type, ticker, confidence, side, reason, kelly_fraction, latency_ns, time())
+    SignalEvent(
+        event_type,
+        ticker,
+        confidence,
+        side,
+        reason,
+        kelly_fraction,
+        latency_ns,
+        time(),
+        executed,
+        position_units,
+        applied_fraction,
+    )
+end
+
+"""
+    SignalEvent(event_type, ticker, confidence, side, reason, kelly_fraction, latency_ns, timestamp)
+
+Backward-compatible 8-argument positional constructor.
+"""
+function SignalEvent(
+    event_type::String,
+    ticker::String,
+    confidence::Float32,
+    side::String,
+    reason::String,
+    kelly_fraction::Float64,
+    latency_ns::Int64,
+    timestamp::Float64,
+)
+    SignalEvent(
+        event_type,
+        ticker,
+        confidence,
+        side,
+        reason,
+        kelly_fraction,
+        latency_ns,
+        timestamp,
+        false,
+        0.0,
+        0.0,
+    )
+end
+
+"""
+    SignalEvent(d::Dict)
+
+Deserialize a SignalEvent from a dictionary (typically parsed from a JSON line).
+"""
+function SignalEvent(d::Dict)
+    executed = get(d, "executed", false)
+    if executed isa AbstractString
+        executed = parse(Bool, executed)
+    end
+    SignalEvent(
+        d["event_type"],
+        d["ticker"],
+        Float32(d["confidence"]),
+        d["side"],
+        get(d, "reason", ""),
+        Float64(get(d, "kelly_fraction", 0.0)),
+        Int64(get(d, "latency_ns", 0)),
+        Float64(get(d, "timestamp", time())),
+        executed,
+        Float64(get(d, "position_units", 0.0)),
+        Float64(get(d, "applied_fraction", 0.0)),
+    )
+end
+
+const _EVENT_SCHEMA_VERSION = 1
+
+function _event_to_dict(event::SignalEvent)
+    Dict(
+        "schema_version" => _EVENT_SCHEMA_VERSION,
+        "event_type" => event.event_type,
+        "ticker" => event.ticker,
+        "confidence" => event.confidence,
+        "side" => event.side,
+        "reason" => event.reason,
+        "kelly_fraction" => event.kelly_fraction,
+        "latency_ns" => event.latency_ns,
+        "timestamp" => event.timestamp,
+        "executed" => event.executed,
+        "position_units" => event.position_units,
+        "applied_fraction" => event.applied_fraction,
+    )
 end
 
 # ── Execution Engine ──────────────────────────────────────────────────────────
@@ -288,6 +389,9 @@ Stateful execution engine with confidence gating and position management.
 - `max_position_size`:    hard cap on position units (default 10.0)
 - `payoff_ratio`:         odds-style average win/loss ratio for Kelly sizing (default 1.5)
 - `positions`:            current open positions (ticker → quantity)
+- `log_file`:             optional path to a JSON-lines event log
+- `log_io`:               open file handle for the event log (if configured)
+- `log_lock`:             lock serializing `log_io` writes
 """
 mutable struct ExecutionEngine
     confidence_threshold::Float32
@@ -299,14 +403,86 @@ mutable struct ExecutionEngine
     rejected_signals::Int
     should_stop::Threads.Atomic{Bool}
     events::Vector{SignalEvent}
+    log_file::Union{String, Nothing}
+    log_io::Union{IOStream, Nothing}
+    log_lock::ReentrantLock
 end
 
+"""
+    close_log!(engine)
+
+Flush and close the event log file handle, if one is open.
+"""
+function close_log!(engine::ExecutionEngine)
+    lock(engine.log_lock) do
+        if engine.log_io !== nothing
+            try
+                flush(engine.log_io)
+                close(engine.log_io)
+            catch
+            end
+            engine.log_io = nothing
+        end
+    end
+    return engine
+end
+
+"""
+    flush_log!(engine)
+
+Flush the event log file handle, if one is open.
+"""
+function flush_log!(engine::ExecutionEngine)
+    lock(engine.log_lock) do
+        if engine.log_io !== nothing && isopen(engine.log_io)
+            flush(engine.log_io)
+        end
+    end
+    return engine
+end
+
+function _write_event!(engine::ExecutionEngine, event::SignalEvent)
+    if engine.log_io === nothing
+        return event
+    end
+    lock(engine.log_lock) do
+        if engine.log_io !== nothing && isopen(engine.log_io)
+            println(engine.log_io, JSON.json(_event_to_dict(event)))
+        end
+    end
+    return event
+end
+
+function _record_event!(engine::ExecutionEngine, event::SignalEvent)
+    push!(engine.events, event)
+    _write_event!(engine, event)
+    return event
+end
+
+"""
+    ExecutionEngine(; confidence_threshold=0.85f0, max_position_size=10.0, payoff_ratio=1.5, log_file=nothing, truncate=false)
+
+Create an execution engine. If `log_file` is provided, events are appended as JSON-lines.
+Pass `truncate=true` to truncate an existing log.
+"""
 function ExecutionEngine(;
     confidence_threshold::Float32 = Float32(0.85),
     max_position_size::Float64 = 10.0,
     payoff_ratio::Float64 = 1.5,
+    log_file::Union{String, Nothing} = nothing,
+    truncate::Bool = false,
 )
-    ExecutionEngine(
+    log_io = if log_file === nothing
+        nothing
+    else
+        dir = dirname(log_file)
+        if !isempty(dir)
+            mkpath(dir)
+        end
+        open(log_file, truncate ? "w" : "a")
+    end
+
+    engine = ExecutionEngine(
         confidence_threshold,
         max_position_size,
         payoff_ratio,
@@ -316,7 +492,12 @@ function ExecutionEngine(;
         0,
         Threads.Atomic{Bool}(false),
         SignalEvent[],
+        log_file,
+        log_io,
+        ReentrantLock(),
     )
+    finalizer(close_log!, engine)
+    return engine
 end
 
 """
@@ -330,6 +511,7 @@ function stop!(engine::ExecutionEngine)
     # Threads.Atomic supports getindex/setindex! (engine.should_stop[]);
     # Threads.atomic_store!/atomic_load are for AtomicMemory / lower-level APIs.
     engine.should_stop[] = true
+    flush_log!(engine)
 end
 
 """
@@ -354,32 +536,32 @@ function execute_signal!(
 
     if !passes_gate(signal, engine.confidence_threshold)
         engine.rejected_signals += 1
-        push!(
-            engine.events,
+        reason = "confidence=$(signal.confidence) < threshold=$(engine.confidence_threshold)"
+        _record_event!(
+            engine,
             SignalEvent(
                 "gate_reject",
                 signal.ticker,
                 signal.confidence,
                 string(signal.side);
-                reason = "confidence=$(signal.confidence) < threshold=$(engine.confidence_threshold)",
+                reason = reason,
+                latency_ns = lat,
             ),
         )
-        return ExecutionDecision(
-            signal,
-            false,
-            "confidence=$(signal.confidence) < threshold=$(engine.confidence_threshold)",
-            0.0,
-            0.0,
-            0.0,
-            lat,
-        )
+        return ExecutionDecision(signal, false, reason, 0.0, 0.0, 0.0, lat)
     end
 
     if signal.side == Neutral
         engine.rejected_signals += 1
-        push!(
-            engine.events,
-            SignalEvent("neutral_reject", signal.ticker, signal.confidence, string(signal.side)),
+        _record_event!(
+            engine,
+            SignalEvent(
+                "neutral_reject",
+                signal.ticker,
+                signal.confidence,
+                string(signal.side);
+                latency_ns = lat,
+            ),
         )
         return ExecutionDecision(signal, false, "neutral signal", 0.0, 0.0, 0.0, lat)
     end
@@ -394,8 +576,8 @@ function execute_signal!(
 
     if units <= 0.0
         engine.rejected_signals += 1
-        push!(
-            engine.events,
+        _record_event!(
+            engine,
             SignalEvent(
                 "zero_reject",
                 signal.ticker,
@@ -403,6 +585,7 @@ function execute_signal!(
                 string(signal.side);
                 reason = "zero-sized position",
                 kelly_fraction = position.kelly_fraction,
+                latency_ns = lat,
             ),
         )
         return ExecutionDecision(
@@ -427,8 +610,8 @@ function execute_signal!(
     end
 
     engine.executed_signals += 1
-    push!(
-        engine.events,
+    _record_event!(
+        engine,
         SignalEvent(
             "executed",
             signal.ticker,
@@ -436,6 +619,9 @@ function execute_signal!(
             string(signal.side);
             kelly_fraction = position.kelly_fraction,
             latency_ns = lat,
+            executed = true,
+            position_units = units,
+            applied_fraction = applied_fraction,
         ),
     )
     return ExecutionDecision(
@@ -455,6 +641,37 @@ end
 Fraction of signals that were executed (not rejected).
 """
 fill_rate(e::ExecutionEngine) = e.total_signals == 0 ? 0.0 : e.executed_signals / e.total_signals
+
+"""
+    load_history(path) -> Vector{SignalEvent}
+
+Load a JSON-lines event history written by an `ExecutionEngine` with `log_file`.
+Returns an empty vector for missing or empty files, and skips malformed lines
+with a warning.
+"""
+function load_history(path::String)::Vector{SignalEvent}
+    events = SignalEvent[]
+    isfile(path) || return events
+
+    open(path, "r") do io
+        for (i, line) in enumerate(eachline(io))
+            s = strip(line)
+            isempty(s) && continue
+            try
+                d = JSON.parse(s)
+                if get(d, "schema_version", _EVENT_SCHEMA_VERSION) != _EVENT_SCHEMA_VERSION
+                    @warn "Skipping event log line $i with unexpected schema version"
+                    continue
+                end
+                push!(events, SignalEvent(d))
+            catch e
+                @warn "Skipping malformed event log line $i: $e"
+            end
+        end
+    end
+
+    return events
+end
 
 # ── dYdX v4 REST Client ───────────────────────────────────────────────────────
 
@@ -970,6 +1187,7 @@ function start!(
         end
     end
 
+    flush_log!(engine)
     @info "[execution] ZMQ listener stopped"
 end
 

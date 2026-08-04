@@ -82,6 +82,7 @@ engine = ExecutionEngine(
     confidence_threshold = Float32(0.85),
     max_position_size    = 10.0,
     payoff_ratio         = 1.5,
+    log_file             = "events.jsonl",
 )
 ```
 
@@ -101,7 +102,18 @@ decision = execute_signal!(engine, signal, 10_000.0)
 println(decision)
 ```
 
-### 3. Start the ZMQ listener
+### 3. Persist and replay events (optional)
+
+```julia
+# Each SignalEvent is appended as a JSON line with a schema_version field
+# Close the log handle when finished (also flushed by stop!)
+close_log!(engine)
+
+# Load the history back for audit or replay
+history = load_history("events.jsonl")
+```
+
+### 4. Start the ZMQ listener
 
 ```julia
 start!(
@@ -119,7 +131,7 @@ start!(
 )
 ```
 
-### 4. Fetch market data for any supported venue symbol
+### 5. Fetch market data for any supported venue symbol
 
 ```julia
 client = DydxClient(base_url = "https://indexer.dydx.trade/v4")
@@ -280,6 +292,13 @@ result = run_backtest(config, signals)
 # Print summary table
 print_summary(result)
 
+# Persist backtest event trail by passing log_file to BacktestConfig or run_backtest
+config_log = BacktestConfig(
+    initial_balance = 10_000.0,
+    log_file = "backtest_events.jsonl",
+)
+result = run_backtest(config_log, signals)
+
 # Export results
 export_equity_csv(result, "output/equity.csv")
 export_trade_log_json(result, "output/trades.json")
@@ -289,8 +308,8 @@ export_trade_log_json(result, "output/trades.json")
 
 | Type / Function | Description |
 |-----------------|-------------|
-| `BacktestConfig(; initial_balance, confidence_threshold, payoff_ratio, max_position_size, risk_free_rate, slippage_pct, commission_pct)` | Configuration for a backtest run. Defaults: balance `$10,000`, threshold `0.85`, payoff `1.5`, max units `10.0`, risk-free rate `0.0`, slippage `0.0%`, commission `0.0%`. |
-| `run_backtest(config, signals)` | Replay `Vector{TradeSignal}` through the engine. Returns a `BacktestResult`. |
+| `BacktestConfig(; initial_balance, confidence_threshold, payoff_ratio, max_position_size, risk_free_rate, slippage_pct, commission_pct, log_file)` | Configuration for a backtest run. Defaults: balance `$10,000`, threshold `0.85`, payoff `1.5`, max units `10.0`, risk-free rate `0.0`, slippage `0.0%`, commission `0.0%`. Optional `log_file` persists `SignalEvent`s. |
+| `run_backtest(config, signals; log_file=config.log_file)` | Replay `Vector{TradeSignal}` through the engine. Returns a `BacktestResult`. |
 | `BacktestResult` | Result struct with `config`, `initial_balance`, `final_balance`, `equity_curve`, `trade_log`, `events`, `total_return`, `max_drawdown`, `win_rate`, `total_trades`. |
 | `print_summary(result)` | Print a formatted summary table to stdout. |
 | `load_signals_json(path)` | Load signals from a JSON file (array of signal dicts). |
@@ -344,12 +363,14 @@ The ZMQ listener expects JSON objects matching this schema:
 | Type / Function | Description |
 |-----------------|-------------|
 | `TradeSignal` | Immutable struct holding a deserialized trade signal |
-| `ExecutionEngine` | Stateful engine with confidence gate, Kelly sizing, and position tracking |
+| `ExecutionEngine` | Stateful engine with confidence gate, Kelly sizing, and position tracking. Optional `log_file` appends events as JSON lines. |
 | `ExecutionDecision` | Result of processing one signal, including requested `kelly_fraction` and capped `applied_fraction` |
 | `execute_signal!(engine, signal, balance)` | Gate, size, and process a single signal |
 | `latency_ns(signal)` | End-to-end latency in nanoseconds |
 | `passes_gate(signal, threshold)` | Boolean check: `signal.confidence >= threshold` |
 | `fill_rate(engine)` | Fraction of signals executed vs. rejected |
+| `load_history(path)` | Load a JSON-lines `SignalEvent` history; returns `SignalEvent[]` for missing/empty files and skips malformed lines |
+| `close_log!(engine)` | Flush and close the event log file handle |
 
 ### dYdX v4 Client
 
