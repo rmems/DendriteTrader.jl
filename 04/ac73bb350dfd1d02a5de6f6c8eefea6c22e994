@@ -1,0 +1,43 @@
+docs/superpowers/specs/2026-08-20-portfolio-risk-cap-design.md
+  s_98dae19df1a83b::t_c14ff8488bb1f5 1-53
+README.md
+  s_98dae19df1a83b::t_d047fb2c11843b 313
+  s_98dae19df1a83b::t_ef43328065897f 17
+  s_98dae19df1a83b::t_5fcc4bd133b83f 83-87
+test/runtests.jl
+  s_98dae19df1a83b::t_c5a5591460393d 288-351
+  s_98dae19df1a83b::t_a3d20a2a6b7936 581
+  s_98dae19df1a83b::t_b5135e4fe9b909 600
+  s_98dae19df1a83b::t_e1fabe0d564b17 592
+docs/src/execution.md
+  s_98dae19df1a83b::t_1f8841033ec92b 31
+CHANGELOG.md
+  s_98dae19df1a83b::t_60f5d58817a59e 12
+src/backtest/Backtest.jl
+  s_98dae19df1a83b::t_3c9c070db7605b 269
+  s_98dae19df1a83b::t_6a15bce9743d10 56,67,79,90
+src/DendriteTrader.jl
+  s_98dae19df1a83b::t_49c1fefd521715 645-660,662-663
+  s_98dae19df1a83b::t_c3c061f1994f3e 661
+  s_98dae19df1a83b::t_e78abcb85fa8fe 388-395,400
+  s_98dae19df1a83b::t_17352df32ec934 87
+  s_98dae19df1a83b::t_cef1f7045ef661 533-566
+  s_98dae19df1a83b::t_23b8c90709fb33 495
+  s_98dae19df1a83b::t_489d87d8e6b835 465,469-472,477
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "04ac73bb350dfd1d02a5de6f6c8eefea6c22e994",
+  "prompts": {},
+  "sessions": {
+    "s_98dae19df1a83b": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "2f3534b9-f1e6-4440-a10e-805e99497f2a",
+        "model": "grok-4.6"
+      },
+      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
+    }
+  }
+}
