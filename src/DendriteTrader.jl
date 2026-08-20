@@ -84,7 +84,7 @@ export validate_signal, execute_signal!, latency_ns, passes_gate
 export DydxClient, DydxPrice, get_price, mid_price, spread_bps
 export RateLimiter, acquire!, set_rate!
 export PriceCache, invalidate!, clear!, cache_size, get_cached, put_cached!, is_fresh
-export start!, stop!, events, fill_rate
+export start!, stop!, events, fill_rate, portfolio_risk
 export kelly_fraction, from_confidence, half_kelly
 export RiskTier, Aggressive, Moderate, Conservative, Minimal, risk_tier
 export PositionSize, size_position
@@ -385,17 +385,19 @@ end
 Stateful execution engine with confidence gating and position management.
 
 # Fields
-- `confidence_threshold`: minimum SNN confidence to execute (default 0.85)
-- `max_position_size`:    hard cap on position units (default 10.0)
-- `payoff_ratio`:         odds-style average win/loss ratio for Kelly sizing (default 1.5)
-- `positions`:            current open positions (ticker → quantity)
-- `log_file`:             optional path to a JSON-lines event log
-- `log_io`:               open file handle for the event log (if configured)
-- `log_lock`:             lock serializing `log_io` writes
+- `confidence_threshold`:   minimum SNN confidence to execute (default 0.85)
+- `max_position_size`:      hard cap on position units per fill (default 10.0)
+- `max_portfolio_exposure`: hard cap on gross units across names (default `Inf`)
+- `payoff_ratio`:           odds-style average win/loss ratio for Kelly sizing (default 1.5)
+- `positions`:              current open positions (ticker → quantity)
+- `log_file`:               optional path to a JSON-lines event log
+- `log_io`:                 open file handle for the event log (if configured)
+- `log_lock`:               lock serializing `log_io` writes
 """
 mutable struct ExecutionEngine
     confidence_threshold::Float32
     max_position_size::Float64
+    max_portfolio_exposure::Float64
     payoff_ratio::Float64
     positions::Dict{String, Float64}
     total_signals::Int
@@ -460,14 +462,19 @@ function _record_event!(engine::ExecutionEngine, event::SignalEvent)
 end
 
 """
-    ExecutionEngine(; confidence_threshold=0.85f0, max_position_size=10.0, payoff_ratio=1.5, log_file=nothing, truncate=false)
+    ExecutionEngine(; confidence_threshold=0.85f0, max_position_size=10.0, max_portfolio_exposure=Inf, payoff_ratio=1.5, log_file=nothing, truncate=false)
 
 Create an execution engine. If `log_file` is provided, events are appended as JSON-lines.
 Pass `truncate=true` to truncate an existing log.
+
+`max_portfolio_exposure` is a gross-units cap (`sum(abs(qty))` across names).
+Signals whose projected exposure would exceed the cap are rejected, not clipped.
+The default `Inf` disables the cap.
 """
 function ExecutionEngine(;
     confidence_threshold::Float32 = Float32(0.85),
     max_position_size::Float64 = 10.0,
+    max_portfolio_exposure::Float64 = Inf,
     payoff_ratio::Float64 = 1.5,
     log_file::Union{String, Nothing} = nothing,
     truncate::Bool = false,
@@ -485,6 +492,7 @@ function ExecutionEngine(;
     engine = ExecutionEngine(
         confidence_threshold,
         max_position_size,
+        max_portfolio_exposure,
         payoff_ratio,
         Dict{String, Float64}(),
         0,
@@ -520,6 +528,41 @@ end
 Return the event log for this engine.
 """
 events(engine::ExecutionEngine) = engine.events
+
+"""
+    _gross_exposure(engine) -> Float64
+
+Sum of absolute position quantities across names.
+"""
+_gross_exposure(engine::ExecutionEngine) = sum(abs, values(engine.positions); init = 0.0)
+
+"""
+    portfolio_risk(engine) -> NamedTuple
+
+Current portfolio risk relative to `max_portfolio_exposure`.
+
+# Fields
+- `exposure`: current gross units (`sum(abs(qty))`)
+- `cap`: configured `max_portfolio_exposure`
+- `utilization`: `exposure / cap` when `cap` is finite and positive, otherwise `0.0`
+"""
+function portfolio_risk(engine::ExecutionEngine)
+    exposure = _gross_exposure(engine)
+    cap = engine.max_portfolio_exposure
+    utilization = isfinite(cap) && cap > 0.0 ? exposure / cap : 0.0
+    return (exposure = exposure, cap = cap, utilization = utilization)
+end
+
+function _projected_gross(engine::ExecutionEngine, ticker::String, side::TradeSide, units::Float64)
+    current_gross = _gross_exposure(engine)
+    current_qty = get(engine.positions, ticker, 0.0)
+    if side == Buy
+        return current_gross + units
+    elseif side == Sell
+        return current_gross - min(units, current_qty)
+    end
+    return current_gross
+end
 
 """
     execute_signal!(engine, signal, account_balance) -> ExecutionDecision
@@ -597,6 +640,25 @@ function execute_signal!(
             0.0,
             lat,
         )
+    end
+
+    projected = _projected_gross(engine, signal.ticker, signal.side, units)
+    if projected > engine.max_portfolio_exposure
+        engine.rejected_signals += 1
+        reason = "portfolio exposure $(projected) > cap $(engine.max_portfolio_exposure)"
+        _record_event!(
+            engine,
+            SignalEvent(
+                "portfolio_reject",
+                signal.ticker,
+                signal.confidence,
+                string(signal.side);
+                reason = reason,
+                kelly_fraction = position.kelly_fraction,
+                latency_ns = lat,
+            ),
+        )
+        return ExecutionDecision(signal, false, reason, position.kelly_fraction, 0.0, 0.0, lat)
     end
 
     applied_fraction = account_balance <= 0.0 ? 0.0 : (units * signal.price) / account_balance

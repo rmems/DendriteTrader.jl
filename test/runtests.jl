@@ -285,6 +285,70 @@ using DendriteTrader
         @test zero_dec.reason == "zero-sized position"
     end
 
+    @testset "ExecutionEngine — portfolio exposure cap" begin
+        default_engine = ExecutionEngine()
+        @test isinf(default_engine.max_portfolio_exposure)
+        risk0 = portfolio_risk(default_engine)
+        @test risk0.exposure == 0.0
+        @test isinf(risk0.cap)
+        @test risk0.utilization == 0.0
+
+        engine = ExecutionEngine(max_position_size = 5.0, max_portfolio_exposure = 15.0)
+        function buy_sig(ticker)
+            TradeSignal(
+                Dict(
+                    "ticker"=>ticker,
+                    "side"=>"BUY",
+                    "price"=>90.0,
+                    "quantity"=>1.0,
+                    "confidence"=>0.90,
+                    "timestamp_ns"=>1_000,
+                ),
+            )
+        end
+        function sell_sig(ticker)
+            TradeSignal(
+                Dict(
+                    "ticker"=>ticker,
+                    "side"=>"SELL",
+                    "price"=>90.0,
+                    "quantity"=>1.0,
+                    "confidence"=>0.90,
+                    "timestamp_ns"=>1_000,
+                ),
+            )
+        end
+
+        d1 = execute_signal!(engine, buy_sig("MARKET-P1"), 10_000.0)
+        d2 = execute_signal!(engine, buy_sig("MARKET-P2"), 10_000.0)
+        @test d1.executed && d2.executed
+        @test d1.position_units == 5.0
+        risk_mid = portfolio_risk(engine)
+        @test risk_mid.exposure == 10.0
+        @test risk_mid.cap == 15.0
+        @test risk_mid.utilization ≈ 10.0 / 15.0
+
+        d3 = execute_signal!(engine, buy_sig("MARKET-P3"), 10_000.0)
+        @test d3.executed
+        @test portfolio_risk(engine).exposure == 15.0
+        @test portfolio_risk(engine).utilization ≈ 1.0
+
+        snapshot = copy(engine.positions)
+        rejected = engine.rejected_signals
+        d4 = execute_signal!(engine, buy_sig("MARKET-P4"), 10_000.0)
+        @test !d4.executed
+        @test occursin("portfolio exposure", d4.reason)
+        @test occursin("cap", d4.reason)
+        @test engine.positions == snapshot
+        @test engine.rejected_signals == rejected + 1
+        @test events(engine)[end].event_type == "portfolio_reject"
+
+        d_sell = execute_signal!(engine, sell_sig("MARKET-P3"), 10_000.0)
+        @test d_sell.executed
+        @test portfolio_risk(engine).exposure == 10.0
+        @test get(engine.positions, "MARKET-P3", 0.0) == 0.0
+    end
+
     @testset "PriceCache" begin
         @testset "constructor with default TTL" begin
             cache = PriceCache()
@@ -514,6 +578,7 @@ using DendriteTrader
             @test cfg.confidence_threshold == Float32(0.85)
             @test cfg.payoff_ratio == 1.5
             @test cfg.max_position_size == 10.0
+            @test isinf(cfg.max_portfolio_exposure)
             @test cfg.slippage_pct == 0.0
             @test cfg.commission_pct == 0.0
         end
@@ -524,6 +589,7 @@ using DendriteTrader
                 confidence_threshold = Float32(0.90),
                 payoff_ratio = 2.0,
                 max_position_size = 20.0,
+                max_portfolio_exposure = 50.0,
                 slippage_pct = 0.05,
                 commission_pct = 0.1,
             )
@@ -531,6 +597,7 @@ using DendriteTrader
             @test cfg.confidence_threshold == Float32(0.90)
             @test cfg.payoff_ratio == 2.0
             @test cfg.max_position_size == 20.0
+            @test cfg.max_portfolio_exposure == 50.0
             @test cfg.slippage_pct == 0.05
             @test cfg.commission_pct == 0.1
         end

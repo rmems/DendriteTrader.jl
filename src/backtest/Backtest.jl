@@ -53,6 +53,7 @@ Configuration for backtest runs.
 - `confidence_threshold`: minimum signal confidence to execute (default 0.85)
 - `payoff_ratio`: odds-style average win/loss ratio for Kelly sizing (default 1.5)
 - `max_position_size`: hard cap on position units (default 10.0)
+- `max_portfolio_exposure`: hard cap on gross units across names (default `Inf`)
 - `slippage_pct`: slippage percentage per trade (default 0.0)
 - `commission_pct`: commission percentage per trade (default 0.0)
 - `risk_free_rate`: annualized risk-free rate for Sharpe/Sortino (default 0.0)
@@ -63,6 +64,7 @@ struct BacktestConfig
     confidence_threshold::Float32
     payoff_ratio::Float64
     max_position_size::Float64
+    max_portfolio_exposure::Float64
     slippage_pct::Float64
     commission_pct::Float64
     risk_free_rate::Float64
@@ -74,6 +76,7 @@ function BacktestConfig(;
     confidence_threshold = 0.85f0,
     payoff_ratio = 1.5,
     max_position_size = 10.0,
+    max_portfolio_exposure = Inf,
     slippage_pct = 0.0,
     commission_pct = 0.0,
     risk_free_rate = 0.0,
@@ -84,6 +87,7 @@ function BacktestConfig(;
         Float32(confidence_threshold),
         Float64(payoff_ratio),
         Float64(max_position_size),
+        Float64(max_portfolio_exposure),
         Float64(slippage_pct),
         Float64(commission_pct),
         Float64(risk_free_rate),
@@ -262,6 +266,7 @@ function run_backtest(
     engine = ExecutionEngine(
         confidence_threshold = config.confidence_threshold,
         max_position_size = config.max_position_size,
+        max_portfolio_exposure = config.max_portfolio_exposure,
         payoff_ratio = config.payoff_ratio,
         log_file = log_file,
     )

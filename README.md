@@ -14,6 +14,7 @@ DendriteTrader consumes neural trade signals, applies confidence gating, sizes p
 - **Confidence gate** — only accepts signals above a configurable threshold
 - **Integrated Kelly sizing** — `kelly_fraction`, `half_kelly`, `from_confidence`, and `size_position`
 - **Paper position tracking** — updates in-memory positions for strategy/control-plane decisions
+- **Portfolio risk cap** — optional gross-units cap across names (`max_portfolio_exposure`, `portfolio_risk`)
 - **dYdX v4 market data** — read-only REST client for orderbook and oracle price queries
 
 ## Repository Boundary
@@ -79,10 +80,11 @@ Or add directly:
 using DendriteTrader
 
 engine = ExecutionEngine(
-    confidence_threshold = Float32(0.85),
-    max_position_size    = 10.0,
-    payoff_ratio         = 1.5,
-    log_file             = "events.jsonl",
+    confidence_threshold     = Float32(0.85),
+    max_position_size        = 10.0,
+    max_portfolio_exposure   = Inf,
+    payoff_ratio             = 1.5,
+    log_file                 = "events.jsonl",
 )
 ```
 
@@ -308,7 +310,7 @@ export_trade_log_json(result, "output/trades.json")
 
 | Type / Function | Description |
 |-----------------|-------------|
-| `BacktestConfig(; initial_balance, confidence_threshold, payoff_ratio, max_position_size, risk_free_rate, slippage_pct, commission_pct, log_file)` | Configuration for a backtest run. Defaults: balance `$10,000`, threshold `0.85`, payoff `1.5`, max units `10.0`, risk-free rate `0.0`, slippage `0.0%`, commission `0.0%`. Optional `log_file` persists `SignalEvent`s. |
+| `BacktestConfig(; initial_balance, confidence_threshold, payoff_ratio, max_position_size, max_portfolio_exposure, risk_free_rate, slippage_pct, commission_pct, log_file)` | Configuration for a backtest run. Defaults: balance `$10,000`, threshold `0.85`, payoff `1.5`, max units `10.0`, portfolio cap `Inf`, risk-free rate `0.0`, slippage `0.0%`, commission `0.0%`. Optional `log_file` persists `SignalEvent`s. |
 | `run_backtest(config, signals; log_file=config.log_file)` | Replay `Vector{TradeSignal}` through the engine. Returns a `BacktestResult`. |
 | `BacktestResult` | Result struct with `config`, `initial_balance`, `final_balance`, `equity_curve`, `trade_log`, `events`, `total_return`, `max_drawdown`, `win_rate`, `total_trades`. |
 | `print_summary(result)` | Print a formatted summary table to stdout. |

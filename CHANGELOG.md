@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Portfolio risk cap**: `ExecutionEngine` accepts `max_portfolio_exposure` (gross units across names, default `Inf`). Signals that would exceed the cap are rejected. New `portfolio_risk(engine)` reports current exposure, cap, and utilization. `BacktestConfig` forwards the same knob.
 - **Event persistence**: `ExecutionEngine` can append every `SignalEvent` to a JSON-lines log (`log_file` and `truncate` kwargs). New `load_history(path)` reads the log back, skipping missing/empty/malformed lines. New `close_log!(engine)` flushes and closes the log handle.
 - `SignalEvent` now captures the decision outcome with `executed`, `position_units`, and `applied_fraction` fields, and includes a `schema_version` field in its JSON representation.
 - `BacktestConfig` and `run_backtest` accept an optional `log_file` to persist backtest event trails.

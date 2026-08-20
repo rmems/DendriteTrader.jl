@@ -28,6 +28,7 @@ DendriteTrader.start!
 DendriteTrader.stop!
 DendriteTrader.events
 DendriteTrader.fill_rate
+DendriteTrader.portfolio_risk
 DendriteTrader.load_history
 DendriteTrader.close_log!
 ```
