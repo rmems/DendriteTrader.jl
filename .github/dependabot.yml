@@ -1,0 +1,23 @@
+# Dependabot version updates for GitHub Actions and Julia.
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates
+#
+# Julia is a documented Dependabot ecosystem for Project.toml layouts
+# (GitHub Changelog, 2025-12-16). Root and docs are separate projects, not
+# a workspace, so each directory is listed explicitly.
+
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "julia"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "julia"
+    directory: "/docs"
+    schedule:
+      interval: "weekly"
