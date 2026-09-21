@@ -66,7 +66,6 @@ policy, and known limitations. Raw licensed or large market data is not committe
 Zero-cost and zero-latency scenarios are diagnostics, not realistic claims. L2 data
 may support an explicitly approximate queue model; queue-accurate claims require
 suitable order-level data.
-
 ## Canonical replay input
 
 The replay kernel accepts newline-delimited JSON containing `book_delta` and
