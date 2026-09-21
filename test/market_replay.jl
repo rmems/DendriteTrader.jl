@@ -44,11 +44,21 @@ const FIXTURE = joinpath(@__DIR__, "fixtures", "book_session.jsonl")
     @test_throws ArgumentError BookDelta(:SIM, "XYZ", 1, 2, 0, Bid, 100, 10)
     @test_throws ArgumentError BookDelta(:SIM, "XYZ", 1, 2, 1, Bid, 0, 10)
     @test_throws ArgumentError BookDelta(:SIM, "XYZ", 1, 2, 1, Bid, 100, 0)
+    @test_throws ArgumentError BookDelta(:SIM, "XYZ", true, 2, 1, Bid, 100, 10)
+    @test_throws ArgumentError BookDelta(:SIM, "XYZ", 1, true, 1, Bid, 100, 10)
+    @test_throws ArgumentError BookDelta(:SIM, "XYZ", 1, 2, true, Bid, 100, 10)
+    @test_throws ArgumentError BookDelta(:SIM, "XYZ", 1, 2, 1, Bid, true, 10)
+    @test_throws ArgumentError BookDelta(:SIM, "XYZ", 1, 2, 1, Bid, 100, true)
 
     valid_trade = TradePrint(:SIM, "XYZ", 1, 2, 1, Buy, 100, 3)
     @test valid_trade isa MarketEvent
     @test_throws ArgumentError TradePrint(:SIM, "XYZ", 1, 2, 1, Neutral, 100, 3)
     @test_throws ArgumentError TradePrint(:SIM, "XYZ", 1, 2, 1, Buy, 100, 0)
+    @test_throws ArgumentError TradePrint(:SIM, "XYZ", true, 2, 1, Buy, 100, 3)
+    @test_throws ArgumentError TradePrint(:SIM, "XYZ", 1, true, 1, Buy, 100, 3)
+    @test_throws ArgumentError TradePrint(:SIM, "XYZ", 1, 2, true, Buy, 100, 3)
+    @test_throws ArgumentError TradePrint(:SIM, "XYZ", 1, 2, 1, Buy, true, 3)
+    @test_throws ArgumentError TradePrint(:SIM, "XYZ", 1, 2, 1, Buy, 100, true)
 end
 
 @testset "JSONL fixture loading" begin

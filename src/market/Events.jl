@@ -35,6 +35,8 @@ struct BookDelta <: MarketEvent
     )
         _validate_identity(venue, instrument)
         _validate_clock(exchange_ts_ns, receive_ts_ns, sequence)
+        _validate_integer(price_ticks, "price_ticks")
+        _validate_integer(size_delta, "size_delta")
         price_ticks > 0 || throw(ArgumentError("price_ticks must be positive"))
         size_delta != 0 || throw(ArgumentError("size_delta must be non-zero"))
         return new(
@@ -73,6 +75,8 @@ struct TradePrint <: MarketEvent
     )
         _validate_identity(venue, instrument)
         _validate_clock(exchange_ts_ns, receive_ts_ns, sequence)
+        _validate_integer(price_ticks, "price_ticks")
+        _validate_integer(size, "size")
         aggressor_side != Neutral || throw(ArgumentError("aggressor_side must be Buy or Sell"))
         price_ticks > 0 || throw(ArgumentError("price_ticks must be positive"))
         size > 0 || throw(ArgumentError("size must be positive"))
@@ -106,7 +110,15 @@ function _validate_identity(venue::Symbol, instrument::AbstractString)
     return nothing
 end
 
+function _validate_integer(value::Integer, name::AbstractString)
+    value isa Bool && throw(ArgumentError("$(name) must be an integer, not Bool"))
+    return nothing
+end
+
 function _validate_clock(exchange_ts_ns::Integer, receive_ts_ns::Integer, sequence::Integer)
+    _validate_integer(exchange_ts_ns, "exchange_ts_ns")
+    _validate_integer(receive_ts_ns, "receive_ts_ns")
+    _validate_integer(sequence, "sequence")
     exchange_ts_ns > 0 || throw(ArgumentError("exchange_ts_ns must be positive"))
     receive_ts_ns > 0 || throw(ArgumentError("receive_ts_ns must be positive"))
     receive_ts_ns >= exchange_ts_ns ||
