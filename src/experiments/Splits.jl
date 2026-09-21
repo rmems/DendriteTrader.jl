@@ -16,6 +16,7 @@ struct ChronologicalSplit
         embargo >= 0 || throw(ArgumentError("embargo must be non-negative"))
         !isempty(train) && !isempty(validation) && !isempty(test) ||
             throw(ArgumentError("split ranges must be non-empty"))
+        first(train) >= 1 || throw(ArgumentError("split indices must be positive"))
         first(validation) - last(train) - 1 == embargo ||
             throw(ArgumentError("train/validation embargo does not match"))
         first(test) - last(validation) - 1 == embargo ||
