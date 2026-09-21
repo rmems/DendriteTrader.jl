@@ -1,6 +1,7 @@
 # https://docs.devin.ai/onboard-devin/environment-yaml
 # Devin environment for DendriteTrader.jl
 
+# One-time setup (e.g., install system tools, global CLIs).
 initialize: |
   mkdir -p ~/.julia
   if [ ! -d ~/.julia/julia-1.10.11 ]; then
@@ -11,6 +12,7 @@ initialize: |
   fi
   echo "PATH=$HOME/.julia/julia-1.10.11/bin:$PATH" >> $ENVRC
 
+# Install project dependencies (runs during builds, surfaced to agent at session start).
 maintenance: |
   julia --project=. -e 'using Pkg; Pkg.instantiate()'
 
@@ -26,4 +28,4 @@ knowledge:
       DOCUMENTER_TEST=true julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate(); include("docs/make.jl")'
   - name: notes
     contents: |
-      Project targets Julia 1.10. Use the bundled Julia binary under ~/.julia/julia-1.10.11/bin.
+      Project targets Julia 1.10. The blueprint installs Julia 1.10.11 under ~/.julia/julia-1.10.11/bin and prepends it to PATH, but the active VM may also provide julia via juliaup. Prefer the `julia` command that is first on PATH and respects the project's declared julia compat.
