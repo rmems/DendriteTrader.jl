@@ -25,6 +25,11 @@ struct ChronologicalSplit
     end
 end
 
+function _split_index(value::Integer, name::AbstractString)
+    typemin(Int) <= value <= typemax(Int) || throw(ArgumentError("$name must fit in Int"))
+    return Int(value)
+end
+
 """
     walk_forward_splits(n; train_size, validation_size, test_size, embargo, max_horizon)
 
@@ -45,6 +50,12 @@ function walk_forward_splits(
     test_size > 0 || throw(ArgumentError("test_size must be positive"))
     max_horizon >= 0 || throw(ArgumentError("max_horizon must be non-negative"))
     embargo >= max_horizon || throw(ArgumentError("embargo must be at least max_horizon"))
+
+    n = _split_index(n, "n")
+    train_size = _split_index(train_size, "train_size")
+    validation_size = _split_index(validation_size, "validation_size")
+    test_size = _split_index(test_size, "test_size")
+    embargo = _split_index(embargo, "embargo")
 
     splits = ChronologicalSplit[]
     train_end = Int(train_size)
