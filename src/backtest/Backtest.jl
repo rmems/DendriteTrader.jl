@@ -125,8 +125,8 @@ Result of a backtest run.
 # Fields
 - `config`: the BacktestConfig used
 - `initial_balance`: starting balance
-- `final_balance`: ending balance
-- `equity_curve`: balance at each signal
+- `final_balance`: final marked-to-market equity
+- `equity_curve`: marked-to-market equity after each signal
 - `trade_log`: list of all trades
 - `events`: raw SignalEvents from the engine
 - `total_return`: total return percentage
@@ -298,7 +298,22 @@ function run_backtest(
             continue
         end
 
-        decision = execute_signal!(engine, signal, balance)
+        closing_units =
+            if existing !== nothing && (
+                (existing.side == Buy && signal.side == Sell) ||
+                (existing.side == Sell && signal.side == Buy)
+            )
+                existing.units
+            else
+                nothing
+            end
+        decision = execute_signal!(
+            engine,
+            signal,
+            balance;
+            observed_ns = signal.timestamp_ns,
+            position_units_override = closing_units,
+        )
 
         if decision.executed
             execution_price = apply_slippage(signal.price, signal.side, config.slippage_pct)

@@ -732,6 +732,40 @@ using DendriteTrader
             @test result.max_drawdown == 1.0
         end
 
+        @testset "replay event latency is deterministic" begin
+            cfg = BacktestConfig(initial_balance = 10_000.0)
+            signals = [
+                TradeSignal("BTC-USD", Buy, 100.0, 1.0, 0.92f0, 1_000_000_000),
+                TradeSignal("BTC-USD", Sell, 101.0, 1.0, 0.90f0, 2_000_000_000),
+            ]
+
+            first = run_backtest(cfg, signals)
+            second = run_backtest(cfg, signals)
+
+            @test getfield.(first.events, :latency_ns) == [0, 0]
+            @test getfield.(first.events, :latency_ns) == getfield.(second.events, :latency_ns)
+        end
+
+        @testset "full closes use one fill quantity across engine and ledger" begin
+            cfg = BacktestConfig(initial_balance = 10_000.0, max_position_size = 1_000.0)
+            long_signals = [
+                TradeSignal("BTC-USD", Buy, 100.0, 1.0, 0.99f0, 1_000_000_000),
+                TradeSignal("BTC-USD", Sell, 110.0, 1.0, 0.86f0, 2_000_000_000),
+            ]
+            short_signals = [
+                TradeSignal("BTC-USD", Sell, 100.0, 1.0, 0.99f0, 1_000_000_000),
+                TradeSignal("BTC-USD", Buy, 90.0, 1.0, 0.86f0, 2_000_000_000),
+            ]
+
+            long_result = run_backtest(cfg, long_signals)
+            short_result = run_backtest(cfg, short_signals)
+
+            @test long_result.trade_log[end].is_closed
+            @test long_result.events[end].position_units == long_result.trade_log[end].units
+            @test short_result.trade_log[end].is_closed
+            @test short_result.events[end].position_units == short_result.trade_log[end].units
+        end
+
         @testset "run_backtest with slippage and commission combined" begin
             cfg =
                 BacktestConfig(initial_balance = 10_000.0, slippage_pct = 0.5, commission_pct = 0.1)

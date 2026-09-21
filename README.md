@@ -328,12 +328,12 @@ export_trade_log_json(result, "output/trades.json")
 |-------|------|-------------|
 | `config` | `BacktestConfig` | Configuration used for the backtest run |
 | `initial_balance` | `Float64` | Starting account balance |
-| `final_balance` | `Float64` | Ending account balance |
+| `final_balance` | `Float64` | Final marked-to-market equity |
 | `total_return` | `Float64` | Total return percentage |
 | `max_drawdown` | `Float64` | Maximum drawdown percentage |
 | `win_rate` | `Float64` | Fraction of profitable trades (of closed trades) |
 | `total_trades` | `Int` | Number of trades executed |
-| `equity_curve` | `Vector{Float64}` | Balance after each signal |
+| `equity_curve` | `Vector{Float64}` | Marked-to-market equity after each signal |
 | `trade_log` | `Vector{TradeRecord}` | All executed trades with PnL |
 | `events` | `Vector{SignalEvent}` | Raw engine events |
 
