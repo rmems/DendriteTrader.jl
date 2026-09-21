@@ -107,6 +107,14 @@ Direction of a trade signal.
     Neutral = 0
 end
 
+include("market/Market.jl")
+using .Market
+
+export BookSide, Bid, Ask
+export MarketEvent, BookDelta, TradePrint, BookSnapshot
+export OrderBookState, ReplayPolicy, ReplaySession
+export apply!, snapshot, best_bid, best_ask, spread_ticks, replay!, load_session_jsonl
+
 """
     TradeSignal
 

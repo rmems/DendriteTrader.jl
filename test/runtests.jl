@@ -1261,3 +1261,4 @@ end
 
 # Integration tests (gated behind DYDX_INTEGRATION=true)
 include("integration/test_dydx.jl")
+include("market_replay.jl")
