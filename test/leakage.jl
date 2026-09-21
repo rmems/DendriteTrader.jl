@@ -89,6 +89,38 @@ end
     @test row.microprice_ticks == 101.0
 end
 
+@testset "Top-of-book features retain exact Int64 tick differences" begin
+    boundary = Int64(1) << 53
+    first_snapshot = BookSnapshot(
+        :SIM,
+        "XYZ",
+        100,
+        110,
+        1,
+        [boundary => boundary],
+        [boundary + 1 => boundary],
+    )
+    second_snapshot = BookSnapshot(
+        :SIM,
+        "XYZ",
+        200,
+        210,
+        2,
+        [boundary => boundary + 1],
+        [boundary + 1 => boundary],
+    )
+
+    rows = microstructure_features([first_snapshot, second_snapshot])
+    @test rows[1].spread_ticks == 1.0
+    @test rows[2].signed_order_flow == 1.0
+end
+
+@testset "Top-of-book features reject non-positive prices" begin
+    invalid_price = BookSnapshot(:SIM, "XYZ", 100, 110, 1, [-2 => 10], [-1 => 10])
+
+    @test_throws ArgumentError microstructure_features([invalid_price])
+end
+
 @testset "Labels reject malformed top-of-book snapshots" begin
     malformed = BookSnapshot(:SIM, "XYZ", 100, 110, 1, [100 => 0], [102 => 10])
     target = BookSnapshot(:SIM, "XYZ", 200, 210, 2, [101 => 10], [103 => 10])
@@ -119,6 +151,17 @@ end
 
     @test normalizer.means == ntuple(_ -> 0.0, 5)
     @test normalizer.scales == ntuple(_ -> 1.0e200, 5)
+end
+
+@testset "Normalization falls back when subnormal scales underflow" begin
+    tiny = nextfloat(0.0)
+    training = FeatureFrame([feature_row(sequence, sequence == 5 ? tiny : 0.0) for sequence in 1:5])
+
+    normalizer = fit!(RollingZScore(), training)
+    transformed = transform!(normalizer, FeatureFrame(collect(training)))
+
+    @test normalizer.scales == ntuple(_ -> 1.0, 5)
+    @test transformed[end].spread_ticks == tiny
 end
 
 @testset "Normalization transformation avoids redundant full-frame copies" begin
@@ -172,4 +215,14 @@ end
         max_horizon = 2,
     )
     @test_throws ArgumentError ChronologicalSplit(-2:0, 3:5, 8:10, 2)
+
+    unsigned = walk_forward_splits(
+        BigInt(52);
+        train_size = BigInt(10),
+        validation_size = BigInt(5),
+        test_size = BigInt(5),
+        embargo = BigInt(2),
+        max_horizon = BigInt(2),
+    )
+    @test unsigned[1].train == 1:10
 end

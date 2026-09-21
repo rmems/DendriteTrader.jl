@@ -29,7 +29,7 @@ function fit!(normalizer::RollingZScore, training::FeatureFrame)
             count
         scale = max_deviation * sqrt(variance)
         isfinite(scale) || throw(ArgumentError("training scales must be finite"))
-        return scale
+        return iszero(scale) ? 1.0 : scale
     end
     normalizer.means = means
     normalizer.scales = scales
