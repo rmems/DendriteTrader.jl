@@ -51,6 +51,13 @@ function fit!(normalizer::RollingZScore, training::FeatureFrame)
 end
 
 """Transform a frame in place without updating the training-fitted parameters."""
+function _normalized_value(value::Float64, mean::Float64, scale::Float64)
+    difference = value - mean
+    isfinite(difference) && return difference / scale
+    magnitude = max(abs(value), abs(mean), abs(scale))
+    return (value / magnitude - mean / magnitude) / (scale / magnitude)
+end
+
 function transform!(normalizer::RollingZScore, frame::FeatureFrame)
     normalizer.fitted || throw(ArgumentError("normalizer must be fitted before transform"))
     transformed = FeatureRow[]
@@ -58,8 +65,11 @@ function transform!(normalizer::RollingZScore, frame::FeatureFrame)
     for row in frame
         values = _feature_values(row)
         normalized = ntuple(
-            feature ->
-                (values[feature] - normalizer.means[feature]) / normalizer.scales[feature],
+            feature -> _normalized_value(
+                values[feature],
+                normalizer.means[feature],
+                normalizer.scales[feature],
+            ),
             5,
         )
         push!(transformed, FeatureRow(row.exchange_ts_ns, row.sequence, normalized...))

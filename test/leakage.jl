@@ -112,6 +112,23 @@ end
     @test row.microprice_ticks == 101.0
 end
 
+@testset "Top-of-book imbalance retains unit differences above Float64 precision" begin
+    large_size = Int64(1) << 53
+    snapshot = BookSnapshot(
+        :SIM,
+        "XYZ",
+        100,
+        110,
+        1,
+        [100 => large_size + 1],
+        [102 => large_size],
+    )
+
+    imbalance = only(microstructure_features([snapshot])).imbalance
+    @test imbalance > 0.0
+    @test imbalance ≈ 1 / Float64(2 * large_size + 1)
+end
+
 @testset "Labels reject malformed top-of-book snapshots" begin
     malformed = BookSnapshot(:SIM, "XYZ", 100, 110, 1, [100 => 0], [102 => 10])
     target = BookSnapshot(:SIM, "XYZ", 200, 210, 2, [101 => 10], [103 => 10])
@@ -161,6 +178,9 @@ end
 
     @test all(isfinite, normalizer.means)
     @test all(isfinite, normalizer.scales)
+
+    transformed = transform!(normalizer, FeatureFrame(collect(training.rows)))
+    @test all(row -> isfinite(row.spread_ticks), transformed)
 end
 
 @testset "Normalization uses a nonzero scale for constant features" begin

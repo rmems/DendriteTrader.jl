@@ -196,7 +196,7 @@ function microstructure_features(
         total_size = Float64(bid_size) + Float64(ask_size)
         mid = (Float64(bid_price) + Float64(ask_price)) / 2
         microprice = (Float64(ask_price) * bid_size + Float64(bid_price) * ask_size) / total_size
-        imbalance = (Float64(bid_size) - Float64(ask_size)) / total_size
+        imbalance = Float64(Int128(bid_size) - Int128(ask_size)) / total_size
         order_flow =
             isnothing(previous_complete_levels) ? 0.0 :
             _signed_order_flow(previous_complete_levels, levels)
