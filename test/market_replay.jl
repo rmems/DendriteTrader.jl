@@ -135,4 +135,20 @@ end
         @test (book.bids, book.asks) == depth_before
         @test book.sequence == 2
     end
+
+    @testset "batch replay is transactional" begin
+        book = OrderBookState(:SIM, "XYZ")
+        before = snapshot(book)
+        valid = BookDelta(:SIM, "XYZ", 100, 110, 1, Bid, 100, 10)
+        gap = BookDelta(:SIM, "XYZ", 101, 111, 3, Ask, 102, 10)
+
+        @test_throws ArgumentError replay!(book, MarketEvent[valid]; depth = -1)
+        @test snapshot(book) == before
+        @test_throws ArgumentError replay!(book, ReplaySession(MarketEvent[valid, gap]))
+        @test snapshot(book) == before
+
+        snapshots = replay!(book, MarketEvent[valid])
+        @test book.sequence == 1
+        @test snapshots[end] == snapshot(book)
+    end
 end

@@ -7,6 +7,12 @@ end
 
 abstract type MarketEvent end
 
+"""
+    BookDelta(...)
+
+An integer-tick change to one L2 price level. `size_delta` is signed; a resulting
+level size of zero removes the level during replay.
+"""
 struct BookDelta <: MarketEvent
     venue::Symbol
     instrument::String
@@ -44,6 +50,7 @@ struct BookDelta <: MarketEvent
     end
 end
 
+"""An observed integer-tick trade with a non-neutral aggressor side."""
 struct TradePrint <: MarketEvent
     venue::Symbol
     instrument::String
@@ -82,6 +89,7 @@ struct TradePrint <: MarketEvent
     end
 end
 
+"""A deterministic, price-sorted copy of an order book after one market event."""
 struct BookSnapshot
     venue::Symbol
     instrument::String
