@@ -19,6 +19,16 @@ end
     @test validation[1].spread_ticks == 999_998.0
 end
 
+@testset "Normalization transform is transactional" begin
+    frame = FeatureFrame([feature_row(1, 1), feature_row(2, floatmax(Float64))])
+    before = collect(frame)
+    tiny_scales = ntuple(_ -> 1.0e-308, 5)
+    normalizer = RollingZScore(ntuple(_ -> 0.0, 5), tiny_scales, true, 0)
+
+    @test_throws ArgumentError transform!(normalizer, frame)
+    @test collect(frame) == before
+end
+
 @testset "Label horizon leakage canary" begin
     snapshots = [
         BookSnapshot(:SIM, "XYZ", 100, 110, 1, [100 => 10], [102 => 10]),
@@ -29,14 +39,31 @@ end
     snapshots[3] = BookSnapshot(:SIM, "XYZ", 300, 310, 3, [50 => 10], [52 => 10])
     labels_after = label_event_horizon(snapshots; horizon_events = 1)
 
-    @test labels_before[1] == Up
+    @test labels_before[1].label == Up
     @test labels_after[1] == labels_before[1]
-    @test labels_after[2] != labels_before[2]
+    @test labels_after[2].label != labels_before[2].label
 
     mixed_session = copy(snapshots)
     mixed_session[3] = BookSnapshot(:OTHER, "XYZ", 300, 310, 3, [50 => 10], [52 => 10])
     @test_throws ArgumentError label_event_horizon(mixed_session; horizon_events = 1)
     @test_throws ArgumentError microstructure_features(mixed_session)
+end
+
+@testset "Labels retain exact event offsets" begin
+    complete_one = BookSnapshot(:SIM, "XYZ", 100, 110, 1, [100 => 10], [102 => 10])
+    incomplete = BookSnapshot(:SIM, "XYZ", 200, 210, 2, [101 => 10], Pair{Int64, Int64}[])
+    complete_three = BookSnapshot(:SIM, "XYZ", 300, 310, 3, [102 => 10], [104 => 10])
+
+    @test isempty(
+        label_event_horizon([complete_one, incomplete, complete_three]; horizon_events = 1),
+    )
+
+    gap = BookSnapshot(:SIM, "XYZ", 300, 310, 4, [102 => 10], [104 => 10])
+    @test_throws ArgumentError label_event_horizon([complete_one, gap]; horizon_events = 1)
+    allowed =
+        label_event_horizon([complete_one, gap]; horizon_events = 1, allow_sequence_gaps = true)
+    @test only(allowed).anchor_sequence == 1
+    @test only(allowed).target_sequence == 4
 end
 
 @testset "Embargoed chronological walk-forward splits" begin
@@ -79,4 +106,5 @@ end
         embargo = 2,
         max_horizon = 2,
     )
+    @test_throws ArgumentError ChronologicalSplit(-2:0, 3:5, 8:10, 2)
 end

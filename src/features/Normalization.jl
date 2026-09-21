@@ -16,11 +16,14 @@ _feature_values(row::FeatureRow) =
 """Fit normalization parameters from the supplied training frame only."""
 function fit!(normalizer::RollingZScore, training::FeatureFrame)
     isempty(training) && throw(ArgumentError("training frame must be non-empty"))
+    _validate_feature_rows(training.rows)
     count = length(training)
-    means = ntuple(index -> sum(_feature_values(row)[index] for row in training) / count, 5)
+    means = ntuple(index -> sum(_feature_values(row)[index] / count for row in training), 5)
+    all(isfinite, means) || throw(ArgumentError("training means must be finite"))
     scales = ntuple(5) do index
         variance = sum((_feature_values(row)[index] - means[index])^2 for row in training) / count
         scale = sqrt(variance)
+        isfinite(scale) || throw(ArgumentError("training scales must be finite"))
         return iszero(scale) ? 1.0 : scale
     end
     normalizer.means = means
@@ -33,16 +36,18 @@ end
 """Transform a frame in place without updating the training-fitted parameters."""
 function transform!(normalizer::RollingZScore, frame::FeatureFrame)
     normalizer.fitted || throw(ArgumentError("normalizer must be fitted before transform"))
-    for index in eachindex(frame)
-        row = frame[index]
+    transformed = FeatureRow[]
+    sizehint!(transformed, length(frame))
+    for row in frame
         values = _feature_values(row)
         normalized = ntuple(
             feature ->
                 (values[feature] - normalizer.means[feature]) / normalizer.scales[feature],
             5,
         )
-        frame[index] = FeatureRow(row.exchange_ts_ns, row.sequence, normalized...)
+        push!(transformed, FeatureRow(row.exchange_ts_ns, row.sequence, normalized...))
     end
+    frame.rows = tuple(transformed...)
     return frame
 end
 
