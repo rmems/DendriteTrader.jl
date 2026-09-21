@@ -36,25 +36,35 @@ struct FeatureRow
     end
 end
 
-"""An ordered collection of `FeatureRow` values."""
-struct FeatureFrame <: AbstractVector{FeatureRow}
-    rows::Vector{FeatureRow}
+function _validate_feature_rows(rows)
+    for index in 2:length(rows)
+        rows[index].sequence > rows[index - 1].sequence ||
+            throw(ArgumentError("feature sequences must strictly increase"))
+        rows[index].exchange_ts_ns >= rows[index - 1].exchange_ts_ns ||
+            throw(ArgumentError("feature timestamps must not decrease"))
+    end
+    return nothing
+end
+
+"""An ordered collection of `FeatureRow` values with protected row ordering."""
+mutable struct FeatureFrame <: AbstractVector{FeatureRow}
+    rows::Tuple{Vararg{FeatureRow}}
 
     function FeatureFrame(rows::AbstractVector{FeatureRow})
-        for index in 2:length(rows)
-            rows[index].sequence > rows[index - 1].sequence ||
-                throw(ArgumentError("feature sequences must strictly increase"))
-            rows[index].exchange_ts_ns >= rows[index - 1].exchange_ts_ns ||
-                throw(ArgumentError("feature timestamps must not decrease"))
-        end
-        return new(collect(rows))
+        _validate_feature_rows(rows)
+        return new(tuple(rows...))
     end
 end
 
 Base.IndexStyle(::Type{FeatureFrame}) = IndexLinear()
-Base.size(frame::FeatureFrame) = size(frame.rows)
+Base.size(frame::FeatureFrame) = (length(frame.rows),)
 Base.getindex(frame::FeatureFrame, index::Int) = frame.rows[index]
-Base.setindex!(frame::FeatureFrame, row::FeatureRow, index::Int) = setindex!(frame.rows, row, index)
+
+function Base.setproperty!(frame::FeatureFrame, name::Symbol, value)
+    name == :rows || throw(ArgumentError("FeatureFrame only exposes the rows property"))
+    replacement = FeatureFrame(FeatureRow[value...])
+    return setfield!(frame, :rows, replacement.rows)
+end
 
 function _best_levels(snapshot::BookSnapshot)
     isempty(snapshot.bids) && return nothing
