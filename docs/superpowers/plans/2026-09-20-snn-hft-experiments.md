@@ -186,4 +186,3 @@
 - [ ] **Step 4: Implement the benchmark with warmup and measured iterations declared in output.**
 - [ ] **Step 5: Document reproduction, limitations, and the explicit no-live-trading boundary.**
 - [ ] **Step 6: Run tests, docs, formatting, and the synthetic end-to-end campaign.**
-
