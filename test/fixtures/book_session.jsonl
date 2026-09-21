@@ -1,0 +1,6 @@
+{"type":"book_delta","venue":"SIM","instrument":"XYZ","exchange_ts_ns":1000,"receive_ts_ns":1010,"sequence":1,"side":"BID","price_ticks":100,"size_delta":10}
+{"type":"book_delta","venue":"SIM","instrument":"XYZ","exchange_ts_ns":1000,"receive_ts_ns":1011,"sequence":2,"side":"ASK","price_ticks":102,"size_delta":12}
+{"type":"book_delta","venue":"SIM","instrument":"XYZ","exchange_ts_ns":1001,"receive_ts_ns":1012,"sequence":3,"side":"BID","price_ticks":101,"size_delta":7}
+{"type":"trade_print","venue":"SIM","instrument":"XYZ","exchange_ts_ns":1002,"receive_ts_ns":1013,"sequence":4,"aggressor_side":"BUY","price_ticks":102,"size":3}
+{"type":"book_delta","venue":"SIM","instrument":"XYZ","exchange_ts_ns":1003,"receive_ts_ns":1014,"sequence":5,"side":"BID","price_ticks":101,"size_delta":-2}
+{"type":"book_delta","venue":"SIM","instrument":"XYZ","exchange_ts_ns":1004,"receive_ts_ns":1015,"sequence":6,"side":"BID","price_ticks":101,"size_delta":-5}
