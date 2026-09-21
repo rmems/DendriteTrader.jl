@@ -88,7 +88,8 @@ snapshots = replay!(book, session)
 
 Replay is fail-closed by default: sequences must strictly increase without gaps,
 exchange and receive timestamps cannot move backward, depth cannot become negative,
-and an update cannot cross the book. A feed known to omit sequence numbers may use
-`ReplayPolicy(allow_sequence_gaps=true)` explicitly; that assumption remains part of
-the `ReplaySession`. Trade prints advance event time and sequence but do not invent
-unobserved changes to L2 depth.
+and an update cannot cross the book. Batch replay is transactional: any invalid
+event leaves the destination book unchanged. A feed known to omit events or use
+non-contiguous sequence values may use `ReplayPolicy(allow_sequence_gaps=true)`
+explicitly; that assumption remains part of the `ReplaySession`. Trade prints
+advance event time and sequence but do not invent unobserved changes to L2 depth.
