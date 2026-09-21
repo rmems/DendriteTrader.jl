@@ -129,6 +129,37 @@ end
     @test imbalance ≈ 1 / Float64(2 * large_size + 1)
 end
 
+@testset "Top-of-book price averages retain Int64 boundary ticks" begin
+    boundary = Int64(1) << 53
+    midpoint_boundary = BookSnapshot(
+        :SIM,
+        "XYZ",
+        100,
+        110,
+        1,
+        [boundary + 1 => 3],
+        [boundary + 2 => 3],
+    )
+    microprice_boundary = BookSnapshot(
+        :SIM,
+        "XYZ",
+        100,
+        110,
+        1,
+        [boundary => 3],
+        [boundary + 2 => 3],
+    )
+
+    midpoint_row = only(microstructure_features([midpoint_boundary]))
+    microprice_row = only(microstructure_features([microprice_boundary]))
+
+    @test midpoint_row.spread_ticks == 1.0
+    @test midpoint_row.mid_ticks == Float64(boundary + 2)
+    @test midpoint_row.microprice_ticks == Float64(boundary + 2)
+    @test microprice_row.mid_ticks == Float64(boundary)
+    @test microprice_row.microprice_ticks == microprice_row.mid_ticks
+end
+
 @testset "Labels reject malformed top-of-book snapshots" begin
     malformed = BookSnapshot(:SIM, "XYZ", 100, 110, 1, [100 => 0], [102 => 10])
     target = BookSnapshot(:SIM, "XYZ", 200, 210, 2, [101 => 10], [103 => 10])
@@ -161,6 +192,21 @@ end
     @test only(labels).label == Flat
 end
 
+@testset "Labels are independent of ambient BigFloat precision" begin
+    anchor = BookSnapshot(:SIM, "XYZ", 100, 110, 1, [100 => 10], [102 => 10])
+    target = BookSnapshot(:SIM, "XYZ", 200, 210, 2, [101 => 10], [103 => 10])
+
+    default_precision = only(
+        label_event_horizon([anchor, target]; horizon_events = 1, threshold_ticks = 0.99),
+    )
+    constrained_precision = setprecision(BigFloat, 2) do
+        only(label_event_horizon([anchor, target]; horizon_events = 1, threshold_ticks = 0.99))
+    end
+
+    @test default_precision.label == Up
+    @test constrained_precision == default_precision
+end
+
 @testset "Normalization handles finite large-magnitude training rows" begin
     training = FeatureFrame([feature_row(1, 1.0e200), feature_row(2, -1.0e200)])
 
@@ -168,6 +214,15 @@ end
 
     @test normalizer.means == ntuple(_ -> 0.0, 5)
     @test normalizer.scales == ntuple(_ -> 1.0e200, 5)
+end
+
+@testset "Normalization computes scales about exact means" begin
+    training = FeatureFrame([feature_row(1, 1.0), feature_row(2, nextfloat(1.0))])
+
+    normalizer = fit!(RollingZScore(), training)
+
+    @test normalizer.means == ntuple(_ -> 1.0, 5)
+    @test normalizer.scales == ntuple(_ -> eps(Float64) / 2, 5)
 end
 
 @testset "Normalization handles Float64 boundary values" begin

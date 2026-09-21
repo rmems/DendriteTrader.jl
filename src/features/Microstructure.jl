@@ -100,6 +100,8 @@ function _validated_top_of_book(snapshot::BookSnapshot)
     return bid, ask
 end
 
+_exact_ratio_to_float64(numerator::Int128, denominator::Int128) = Float64(numerator // denominator)
+
 function _validate_snapshot_session(snapshots::AbstractVector{BookSnapshot})
     isempty(snapshots) && return nothing
     venue = first(snapshots).venue
@@ -192,11 +194,16 @@ function microstructure_features(
         bid, ask = levels
         bid_price, bid_size = first(bid), last(bid)
         ask_price, ask_size = first(ask), last(ask)
-        spread = Float64(ask_price) - Float64(bid_price)
-        total_size = Float64(bid_size) + Float64(ask_size)
-        mid = (Float64(bid_price) + Float64(ask_price)) / 2
-        microprice = (Float64(ask_price) * bid_size + Float64(bid_price) * ask_size) / total_size
-        imbalance = Float64(Int128(bid_size) - Int128(ask_size)) / total_size
+        bid_size_wide = Int128(bid_size)
+        ask_size_wide = Int128(ask_size)
+        total_size = bid_size_wide + ask_size_wide
+        spread = Float64(Int128(ask_price) - Int128(bid_price))
+        mid = _exact_ratio_to_float64(Int128(bid_price) + Int128(ask_price), Int128(2))
+        microprice = _exact_ratio_to_float64(
+            Int128(ask_price) * bid_size_wide + Int128(bid_price) * ask_size_wide,
+            total_size,
+        )
+        imbalance = _exact_ratio_to_float64(bid_size_wide - ask_size_wide, total_size)
         order_flow =
             isnothing(previous_complete_levels) ? 0.0 :
             _signed_order_flow(previous_complete_levels, levels)

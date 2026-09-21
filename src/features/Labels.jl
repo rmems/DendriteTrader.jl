@@ -32,8 +32,6 @@ function label_event_horizon(
     horizon_events > 0 || throw(ArgumentError("horizon_events must be positive"))
     isfinite(threshold_ticks) && threshold_ticks >= 0 ||
         throw(ArgumentError("threshold_ticks must be finite and non-negative"))
-    threshold_ticks_big = BigFloat(threshold_ticks)
-    threshold_twice = 2 * threshold_ticks_big
     horizon_events < length(snapshots) ||
         throw(ArgumentError("horizon_events must be shorter than the session"))
     if !allow_sequence_gaps
@@ -43,23 +41,26 @@ function label_event_horizon(
         end
     end
 
-    labels = MovementTarget[]
-    sizehint!(labels, length(snapshots) - horizon_events)
-    for index in 1:(length(snapshots) - horizon_events)
-        anchor = snapshots[index]
-        target = snapshots[index + horizon_events]
-        anchor_levels = _validated_top_of_book(anchor)
-        target_levels = _validated_top_of_book(target)
-        (isnothing(anchor_levels) || isnothing(target_levels)) && continue
-        anchor_bid, anchor_ask = anchor_levels
-        target_bid, target_ask = target_levels
-        anchor_mid_twice = Int128(first(anchor_bid)) + Int128(first(anchor_ask))
-        target_mid_twice = Int128(first(target_bid)) + Int128(first(target_ask))
-        movement_twice = BigFloat(target_mid_twice - anchor_mid_twice)
-        label =
-            movement_twice > threshold_twice ? Up :
-            movement_twice < -threshold_twice ? Down : Flat
-        push!(labels, MovementTarget(anchor.sequence, target.sequence, Int(horizon_events), label))
+    return setprecision(BigFloat, 256) do
+        threshold_twice = 2 * BigFloat(threshold_ticks)
+        labels = MovementTarget[]
+        sizehint!(labels, length(snapshots) - horizon_events)
+        for index in 1:(length(snapshots) - horizon_events)
+            anchor = snapshots[index]
+            target = snapshots[index + horizon_events]
+            anchor_levels = _validated_top_of_book(anchor)
+            target_levels = _validated_top_of_book(target)
+            (isnothing(anchor_levels) || isnothing(target_levels)) && continue
+            anchor_bid, anchor_ask = anchor_levels
+            target_bid, target_ask = target_levels
+            anchor_mid_twice = Int128(first(anchor_bid)) + Int128(first(anchor_ask))
+            target_mid_twice = Int128(first(target_bid)) + Int128(first(target_ask))
+            movement_twice = BigFloat(target_mid_twice - anchor_mid_twice)
+            label =
+                movement_twice > threshold_twice ? Up :
+                movement_twice < -threshold_twice ? Down : Flat
+            push!(labels, MovementTarget(anchor.sequence, target.sequence, Int(horizon_events), label))
+        end
+        labels
     end
-    return labels
 end
