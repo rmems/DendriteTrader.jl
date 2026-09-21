@@ -719,6 +719,20 @@ using DendriteTrader
             @test result.total_return == 1.0
         end
 
+        @testset "entry slippage is reflected at the observed market price" begin
+            cfg = BacktestConfig(
+                initial_balance = 10_000.0,
+                max_position_size = 10.0,
+                slippage_pct = 1.0,
+            )
+            signals = [TradeSignal("BTC-USD", Buy, 100.0, 1.0, 0.92f0, 1_000_000_000)]
+
+            result = run_backtest(cfg, signals)
+
+            @test result.equity_curve == [10_000.0, 9_990.0]
+            @test result.final_balance == 9_990.0
+        end
+
         @testset "same-side observations update open-position marks" begin
             cfg = BacktestConfig(initial_balance = 10_000.0, max_position_size = 10.0)
             signals = [
@@ -764,6 +778,18 @@ using DendriteTrader
             @test long_result.events[end].position_units == long_result.trade_log[end].units
             @test short_result.trade_log[end].is_closed
             @test short_result.events[end].position_units == short_result.trade_log[end].units
+        end
+
+        @testset "position overrides cannot exceed the hard position cap" begin
+            engine = ExecutionEngine(max_position_size = 10.0)
+            signal = TradeSignal("BTC-USD", Buy, 100.0, 1.0, 0.92f0, 1_000_000_000)
+
+            @test_throws ArgumentError execute_signal!(
+                engine,
+                signal,
+                10_000.0;
+                position_units_override = 10.1,
+            )
         end
 
         @testset "run_backtest with slippage and commission combined" begin

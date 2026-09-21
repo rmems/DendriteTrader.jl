@@ -355,7 +355,7 @@ function run_backtest(
                 commission = units * execution_price * (config.commission_pct / 100.0)
                 balance -= commission
                 positions[signal.ticker] =
-                    OpenPosition(execution_price, units, signal.side, commission, execution_price)
+                    OpenPosition(execution_price, units, signal.side, commission, signal.price)
 
                 # Long opens are silent until close; short opens logged with pnl=0
                 if signal.side == Sell

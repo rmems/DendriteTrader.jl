@@ -593,6 +593,8 @@ function execute_signal!(
         if !isfinite(overridden) || overridden < 0.0
             throw(ArgumentError("position_units_override must be finite and non-negative"))
         end
+        overridden <= engine.max_position_size ||
+            throw(ArgumentError("position_units_override must not exceed max_position_size"))
         overridden
     end
 
