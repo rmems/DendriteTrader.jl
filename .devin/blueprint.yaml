@@ -1,16 +1,18 @@
 # https://docs.devin.ai/onboard-devin/environment-yaml
 # Devin environment for DendriteTrader.jl
 
+# One-time setup (e.g., install system tools, global CLIs).
 initialize: |
   mkdir -p ~/.julia
-  if [ ! -d ~/.julia/julia-1.10.11 ]; then
-    url="https://julialang-s3.julialang.org/bin/linux/x64/1.10/julia-1.10.11-linux-x86_64.tar.gz"
+  if [ ! -d ~/.julia/julia-1.13.0 ]; then
+    url="https://julialang-s3.julialang.org/bin/linux/x64/1.13/julia-1.13.0-linux-x86_64.tar.gz"
     curl -fsSL -o /tmp/julia.tar.gz "$url"
-    echo "fb49c6b174600cd2051e37ba3f7330f8acf06dd00bce609bab6611387fdb37bf  /tmp/julia.tar.gz" | sha256sum --strict --check -
+    echo "8975da61c128a5e5ded3e719e868da8c8781deb7ad7913d37fb99be02a81904b  /tmp/julia.tar.gz" | sha256sum --strict --check -
     tar -xzf /tmp/julia.tar.gz -C ~/.julia
   fi
-  echo "PATH=$HOME/.julia/julia-1.10.11/bin:$PATH" >> $ENVRC
+  echo "PATH=$HOME/.julia/julia-1.13.0/bin:$PATH" >> $ENVRC
 
+# Install project dependencies (runs during builds, surfaced to agent at session start).
 maintenance: |
   julia --project=. -e 'using Pkg; Pkg.instantiate()'
 
@@ -26,4 +28,4 @@ knowledge:
       DOCUMENTER_TEST=true julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate(); include("docs/make.jl")'
   - name: notes
     contents: |
-      Project targets Julia 1.10. Use the bundled Julia binary under ~/.julia/julia-1.10.11/bin.
+      Project targets Julia 1.13 (CI tests on the latest stable only). The blueprint installs Julia 1.13.0 under ~/.julia/julia-1.13.0/bin and prepends it to PATH, but the active VM may also provide julia via juliaup. Prefer the `julia` command that is first on PATH and respects the project's declared julia compat.
