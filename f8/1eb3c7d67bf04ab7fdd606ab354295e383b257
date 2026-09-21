@@ -1,0 +1,25 @@
+src/DendriteTrader.jl
+  s_297df05a628b39::t_d96090fda2e4b7 530-531,534-538,544-546,549,589-597
+src/backtest/Backtest.jl
+  s_297df05a628b39::t_5c6fcbda824f79 128-129,301-316
+README.md
+  s_297df05a628b39::t_5c6fcbda824f79 331,336
+test/runtests.jl
+  s_297df05a628b39::t_9921ccc2b96768 735-768
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f81eb3c7d67bf04ab7fdd606ab354295e383b257",
+  "prompts": {},
+  "sessions": {
+    "s_297df05a628b39": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c1cd-1fd2-7531-a8c2-d37d211db070",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Raul Cardenas Montoya <montoyaraul34@gmail.com>"
+    }
+  }
+}
