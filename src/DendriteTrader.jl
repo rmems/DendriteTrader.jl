@@ -217,14 +217,19 @@ end
 
 """
     latency_ns(signal) -> Int64
+    latency_ns(signal, observed_ns) -> Int64
 
-End-to-end latency from signal creation to now (nanoseconds).
-Uses Unix epoch time to match Rust `timestamp_nanos` semantics.
+End-to-end latency from signal creation to an observation timestamp. The one-argument
+method uses the current Unix epoch time for live messages. Pass `observed_ns` during
+deterministic replay so results do not depend on the wall clock.
 """
 function latency_ns(s::TradeSignal)::Int64
     now_ns = round(Int64, time() * 1_000_000_000)
-    return max(0, now_ns - s.timestamp_ns)
+    return latency_ns(s, now_ns)
 end
+
+latency_ns(s::TradeSignal, observed_ns::Integer)::Int64 =
+    observed_ns <= s.timestamp_ns ? Int64(0) : Int64(observed_ns - s.timestamp_ns)
 
 """
     passes_gate(signal, threshold) -> Bool
@@ -522,17 +527,26 @@ Return the event log for this engine.
 events(engine::ExecutionEngine) = engine.events
 
 """
-    execute_signal!(engine, signal, account_balance) -> ExecutionDecision
+    execute_signal!(engine, signal, account_balance; observed_ns=nothing,
+                    position_units_override=nothing) -> ExecutionDecision
 
 Process one signal: gate by confidence, size via Kelly, update positions.
+
+`observed_ns` supplies a deterministic observation timestamp for replay. Live callers
+omit it to use the wall clock. `position_units_override` is reserved for simulators
+that must apply an explicit filled quantity, such as a full-position close; the
+decision event and position ledger both use the overridden quantity.
 """
 function execute_signal!(
     engine::ExecutionEngine,
     signal::TradeSignal,
     account_balance::Float64 = 10_000.0,
+    ;
+    observed_ns::Union{Nothing, Integer} = nothing,
+    position_units_override::Union{Nothing, Real} = nothing,
 )::ExecutionDecision
     engine.total_signals += 1
-    lat = latency_ns(signal)
+    lat = observed_ns === nothing ? latency_ns(signal) : latency_ns(signal, observed_ns)
 
     if !passes_gate(signal, engine.confidence_threshold)
         engine.rejected_signals += 1
@@ -572,7 +586,17 @@ function execute_signal!(
         account_balance = account_balance,
         payoff_ratio = engine.payoff_ratio,
     )
-    units = min(position.units, engine.max_position_size)
+    units = if position_units_override === nothing
+        min(position.units, engine.max_position_size)
+    else
+        overridden = Float64(position_units_override)
+        if !isfinite(overridden) || overridden < 0.0
+            throw(ArgumentError("position_units_override must be finite and non-negative"))
+        end
+        overridden <= engine.max_position_size ||
+            throw(ArgumentError("position_units_override must not exceed max_position_size"))
+        overridden
+    end
 
     if units <= 0.0
         engine.rejected_signals += 1
@@ -606,7 +630,7 @@ function execute_signal!(
     if signal.side == Buy
         engine.positions[signal.ticker] = current + units
     elseif signal.side == Sell
-        engine.positions[signal.ticker] = max(0.0, current - units)
+        engine.positions[signal.ticker] = current - units
     end
 
     engine.executed_signals += 1

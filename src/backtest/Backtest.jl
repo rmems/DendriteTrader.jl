@@ -125,8 +125,8 @@ Result of a backtest run.
 # Fields
 - `config`: the BacktestConfig used
 - `initial_balance`: starting balance
-- `final_balance`: ending balance
-- `equity_curve`: balance at each signal
+- `final_balance`: final marked-to-market equity
+- `equity_curve`: marked-to-market equity after each signal
 - `trade_log`: list of all trades
 - `events`: raw SignalEvents from the engine
 - `total_return`: total return percentage
@@ -239,6 +239,18 @@ function estimate_n_periods(signals::Vector{TradeSignal}, n_returns::Int)::Tuple
     return (max(1, n_returns), false)
 end
 
+function mark_to_market(balance::Float64, positions::Dict{String, OpenPosition})
+    equity = balance
+    for pos in values(positions)
+        if pos.side == Buy
+            equity += (pos.last_mark_price - pos.entry_price) * pos.units
+        else
+            equity += (pos.entry_price - pos.last_mark_price) * pos.units
+        end
+    end
+    return equity
+end
+
 """
     run_backtest(config, signals; log_file=config.log_file) -> BacktestResult
 
@@ -250,8 +262,7 @@ Replay signals through the ExecutionEngine and compute performance metrics.
 - Positions are tracked as `(entry_price, entry_units, is_long)`.
 - A closing signal fully closes the open position using the **entry** units
   (all-or-nothing; partial cover / flip is not supported).
-- Open positions remaining at the end of the signal stream are **not**
-  marked-to-market; metrics reflect closed round-trips only.
+- Open positions are marked to the latest observed signal price at every step.
 - A second same-side signal while already open is ignored (first entry kept).
 """
 function run_backtest(
@@ -276,11 +287,33 @@ function run_backtest(
         # event is recorded for a fill that leaves the ledger unchanged.
         existing = get(positions, signal.ticker, nothing)
         if existing !== nothing && existing.side == signal.side
-            push!(equity_curve, balance)
+            positions[signal.ticker] = OpenPosition(
+                existing.entry_price,
+                existing.units,
+                existing.side,
+                existing.entry_commission,
+                signal.price,
+            )
+            push!(equity_curve, mark_to_market(balance, positions))
             continue
         end
 
-        decision = execute_signal!(engine, signal, balance)
+        closing_units =
+            if existing !== nothing && (
+                (existing.side == Buy && signal.side == Sell) ||
+                (existing.side == Sell && signal.side == Buy)
+            )
+                existing.units
+            else
+                nothing
+            end
+        decision = execute_signal!(
+            engine,
+            signal,
+            balance;
+            observed_ns = signal.timestamp_ns,
+            position_units_override = closing_units,
+        )
 
         if decision.executed
             execution_price = apply_slippage(signal.price, signal.side, config.slippage_pct)
@@ -322,7 +355,7 @@ function run_backtest(
                 commission = units * execution_price * (config.commission_pct / 100.0)
                 balance -= commission
                 positions[signal.ticker] =
-                    OpenPosition(execution_price, units, signal.side, commission, execution_price)
+                    OpenPosition(execution_price, units, signal.side, commission, signal.price)
 
                 # Long opens are silent until close; short opens logged with pnl=0
                 if signal.side == Sell
@@ -354,18 +387,11 @@ function run_backtest(
             )
         end
 
-        push!(equity_curve, balance)
+        push!(equity_curve, mark_to_market(balance, positions))
     end
 
-    # Use final equity (MTM) for total_return so it matches equity_curve
-    final_equity = balance
-    for (_, pos) in positions
-        if pos.side == Buy
-            final_equity += (pos.last_mark_price - pos.entry_price) * pos.units
-        else
-            final_equity += (pos.entry_price - pos.last_mark_price) * pos.units
-        end
-    end
+    # Every curve point is marked to market, including the final point.
+    final_equity = last(equity_curve)
     final_balance = final_equity
     total_return = (final_equity - config.initial_balance) / config.initial_balance * 100.0
     max_dd = compute_max_drawdown(equity_curve)

@@ -1,9 +1,14 @@
 # DendriteTrader
 
-[![Docs](https://github.com/Limen-Neural/DendriteTrader.jl/actions/workflows/docs.yml/badge.svg)](https://limen-neural.github.io/DendriteTrader.jl)
-[![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-blue.svg)](https://github.com/Limen-Neural/DendriteTrader.jl/blob/main/LICENSE)
+[![Docs](https://github.com/rmems/DendriteTrader.jl/actions/workflows/docs.yml/badge.svg)](https://rmems.github.io/DendriteTrader.jl)
+[![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-blue.svg)](https://github.com/rmems/DendriteTrader.jl/blob/main/LICENSE)
 
 Julia strategy, diagnostics, paper-trading, and control-plane tooling for neural trading systems.
+
+The research direction is an event-driven SNN market-microstructure laboratory:
+causal market-event replay, spike encoders, calibrated model comparisons, and
+latency-aware paper execution. It is experimental software, not a production HFT
+runtime, profit claim, or source of financial advice.
 
 DendriteTrader consumes neural trade signals, applies confidence gating, sizes positions with integrated Kelly/fractional-Kelly helpers, tracks paper positions, and exposes read-only market-data utilities. It is intentionally scoped as the Julia-side control-plane layer; deterministic low-latency execution loops belong in Rust services such as `corpus-ipc` and adjacent ledger infrastructure such as `metabolic-ledger`.
 
@@ -60,7 +65,7 @@ SNN signal diagnostics → confidence gate → Kelly sizing → paper decision �
 Or add directly:
 
 ```julia
-] add https://github.com/Limen-Neural/DendriteTrader.jl
+] add https://github.com/rmems/DendriteTrader.jl
 ```
 
 ### Dependencies
@@ -323,12 +328,12 @@ export_trade_log_json(result, "output/trades.json")
 |-------|------|-------------|
 | `config` | `BacktestConfig` | Configuration used for the backtest run |
 | `initial_balance` | `Float64` | Starting account balance |
-| `final_balance` | `Float64` | Ending account balance |
+| `final_balance` | `Float64` | Final marked-to-market equity |
 | `total_return` | `Float64` | Total return percentage |
 | `max_drawdown` | `Float64` | Maximum drawdown percentage |
 | `win_rate` | `Float64` | Fraction of profitable trades (of closed trades) |
 | `total_trades` | `Int` | Number of trades executed |
-| `equity_curve` | `Vector{Float64}` | Balance after each signal |
+| `equity_curve` | `Vector{Float64}` | Marked-to-market equity after each signal |
 | `trade_log` | `Vector{TradeRecord}` | All executed trades with PnL |
 | `events` | `Vector{SignalEvent}` | Raw engine events |
 

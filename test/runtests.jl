@@ -23,6 +23,12 @@ using DendriteTrader
         @test !passes_gate(s, 0.95f0)
     end
 
+    @testset "latency_ns supports deterministic observation time" begin
+        signal = TradeSignal("MARKET-A", Buy, 100.0, 1.0, 0.9f0, 1_000)
+        @test latency_ns(signal, 1_750) == 750
+        @test latency_ns(signal, 500) == 0
+    end
+
     @testset "validate_signal" begin
         # Helper: valid signal dict
         valid = Dict(
@@ -412,7 +418,7 @@ using DendriteTrader
             @test engine.positions["MARKET-E"] < pos_after_buy
         end
 
-        @testset "Sell signal on empty position clamped to 0" begin
+        @testset "Sell signal on empty position opens a signed short" begin
             engine = ExecutionEngine()
             sell = TradeSignal(
                 Dict(
@@ -426,7 +432,7 @@ using DendriteTrader
             )
             dec = execute_signal!(engine, sell, 10_000.0)
             @test dec.executed
-            @test engine.positions["MARKET-F"] == 0.0
+            @test engine.positions["MARKET-F"] == -dec.position_units
         end
 
         @testset "Neutral signal rejected with 'neutral signal' reason" begin
@@ -679,6 +685,111 @@ using DendriteTrader
             result = run_backtest(cfg, signals)
             # Commission should reduce balance: units * price * 0.1%
             @test result.final_balance < cfg.initial_balance
+        end
+
+        @testset "equity curve marks open positions at every signal" begin
+            cfg = BacktestConfig(initial_balance = 10_000.0, max_position_size = 10.0)
+            signals = [
+                TradeSignal(
+                    Dict(
+                        "ticker" => "BTC-USD",
+                        "side" => "BUY",
+                        "price" => 100.0,
+                        "quantity" => 1.0,
+                        "confidence" => 0.92,
+                        "timestamp_ns" => 1_000_000_000,
+                    ),
+                ),
+                TradeSignal(
+                    Dict(
+                        "ticker" => "BTC-USD",
+                        "side" => "NEUTRAL",
+                        "price" => 110.0,
+                        "quantity" => 0.0,
+                        "confidence" => 0.92,
+                        "timestamp_ns" => 2_000_000_000,
+                    ),
+                ),
+            ]
+
+            result = run_backtest(cfg, signals)
+
+            @test result.equity_curve == [10_000.0, 10_000.0, 10_100.0]
+            @test result.final_balance == last(result.equity_curve)
+            @test result.total_return == 1.0
+        end
+
+        @testset "entry slippage is reflected at the observed market price" begin
+            cfg = BacktestConfig(
+                initial_balance = 10_000.0,
+                max_position_size = 10.0,
+                slippage_pct = 1.0,
+            )
+            signals = [TradeSignal("BTC-USD", Buy, 100.0, 1.0, 0.92f0, 1_000_000_000)]
+
+            result = run_backtest(cfg, signals)
+
+            @test result.equity_curve == [10_000.0, 9_990.0]
+            @test result.final_balance == 9_990.0
+        end
+
+        @testset "same-side observations update open-position marks" begin
+            cfg = BacktestConfig(initial_balance = 10_000.0, max_position_size = 10.0)
+            signals = [
+                TradeSignal("BTC-USD", Buy, 100.0, 1.0, 0.92f0, 1_000_000_000),
+                TradeSignal("BTC-USD", Buy, 90.0, 1.0, 0.92f0, 2_000_000_000),
+            ]
+
+            result = run_backtest(cfg, signals)
+
+            @test result.equity_curve == [10_000.0, 10_000.0, 9_900.0]
+            @test result.max_drawdown == 1.0
+        end
+
+        @testset "replay event latency is deterministic" begin
+            cfg = BacktestConfig(initial_balance = 10_000.0)
+            signals = [
+                TradeSignal("BTC-USD", Buy, 100.0, 1.0, 0.92f0, 1_000_000_000),
+                TradeSignal("BTC-USD", Sell, 101.0, 1.0, 0.90f0, 2_000_000_000),
+            ]
+
+            first = run_backtest(cfg, signals)
+            second = run_backtest(cfg, signals)
+
+            @test getfield.(first.events, :latency_ns) == [0, 0]
+            @test getfield.(first.events, :latency_ns) == getfield.(second.events, :latency_ns)
+        end
+
+        @testset "full closes use one fill quantity across engine and ledger" begin
+            cfg = BacktestConfig(initial_balance = 10_000.0, max_position_size = 1_000.0)
+            long_signals = [
+                TradeSignal("BTC-USD", Buy, 100.0, 1.0, 0.99f0, 1_000_000_000),
+                TradeSignal("BTC-USD", Sell, 110.0, 1.0, 0.86f0, 2_000_000_000),
+            ]
+            short_signals = [
+                TradeSignal("BTC-USD", Sell, 100.0, 1.0, 0.99f0, 1_000_000_000),
+                TradeSignal("BTC-USD", Buy, 90.0, 1.0, 0.86f0, 2_000_000_000),
+            ]
+
+            long_result = run_backtest(cfg, long_signals)
+            short_result = run_backtest(cfg, short_signals)
+
+            @test long_result.trade_log[end].is_closed
+            @test long_result.events[end].position_units == long_result.trade_log[end].units
+            @test short_result.trade_log[end].is_closed
+            @test short_result.events[end].position_units == short_result.trade_log[end].units
+        end
+
+        @testset "position overrides cannot exceed the hard position cap" begin
+            engine = ExecutionEngine(max_position_size = 10.0)
+            signal = TradeSignal("BTC-USD", Buy, 100.0, 1.0, 0.92f0, 1_000_000_000)
+
+            @test_throws ArgumentError execute_signal!(
+                engine,
+                signal,
+                10_000.0;
+                position_units_override = 10.1,
+            )
         end
 
         @testset "run_backtest with slippage and commission combined" begin
