@@ -64,6 +64,27 @@ end
         close(io)
         @test_throws ArgumentError load_session_jsonl(path)
     end
+
+    mktemp() do path, io
+        write(
+            io,
+            "{\"type\":\"book_delta\",\"venue\":\"SIM\",\"instrument\":\"XYZ\",\"exchange_ts_ns\":100,\"receive_ts_ns\":110,\"sequence\":1,\"side\":\"BID\",\"price_ticks\":100,\"size_delta\":10}\n",
+        )
+        write(
+            io,
+            "{\"type\":\"book_delta\",\"venue\":\"UNTRUSTED-VENUE\",\"instrument\":\"XYZ\",\"exchange_ts_ns\":200,\"receive_ts_ns\":210,\"sequence\":2,\"side\":\"ASK\",\"price_ticks\":102,\"size_delta\":10}\n",
+        )
+        close(io)
+
+        error = try
+            load_session_jsonl(path)
+            nothing
+        catch caught
+            caught
+        end
+        @test error isa ArgumentError
+        @test occursin("invalid event at line 2", sprint(showerror, error))
+    end
 end
 
 @testset "Deterministic L2 replay" begin

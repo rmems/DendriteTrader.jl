@@ -80,9 +80,8 @@ function _trade_side(value::AbstractString)
     throw(ArgumentError("aggressor_side must be BUY or SELL"))
 end
 
-function _decode_event(record::AbstractDict)
+function _decode_event(record::AbstractDict, venue::Symbol)
     event_type = _required_string(record, "type")
-    venue = Symbol(_required_string(record, "venue"))
     instrument = _required_string(record, "instrument")
     exchange_ts_ns = _required_integer(record, "exchange_ts_ns")
     receive_ts_ns = _required_integer(record, "receive_ts_ns")
@@ -118,13 +117,23 @@ end
 """Load a non-empty, single-instrument `ReplaySession` from newline-delimited JSON."""
 function load_session_jsonl(path::AbstractString; policy::ReplayPolicy = ReplayPolicy())
     events = MarketEvent[]
+    venue_name = nothing
+    venue = nothing
     open(path, "r") do io
         for (line_number, line) in enumerate(eachline(io))
             isempty(strip(line)) && continue
             try
                 record = JSON.parse(line)
                 record isa AbstractDict || throw(ArgumentError("event must be a JSON object"))
-                push!(events, _decode_event(record))
+                record_venue = _required_string(record, "venue")
+                if isnothing(venue_name)
+                    venue_name = record_venue
+                    venue = Symbol(record_venue)
+                else
+                    record_venue == venue_name ||
+                        throw(ArgumentError("all events must use the first event venue"))
+                end
+                push!(events, _decode_event(record, venue::Symbol))
             catch error
                 error isa InterruptException && rethrow()
                 throw(
