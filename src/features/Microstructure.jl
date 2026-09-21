@@ -141,14 +141,25 @@ function _signed_order_flow(previous::BookSnapshot, current::BookSnapshot)
 end
 
 """
-    microstructure_features(snapshots) -> FeatureFrame
+    microstructure_features(snapshots; allow_sequence_gaps=false) -> FeatureFrame
 
 Compute spread, mid-price, microprice, top-level imbalance, and signed order flow
 using only the current and immediately preceding complete snapshot. Snapshots lacking
-either side are omitted.
+either side are omitted. Sequence gaps are rejected by default because signed order
+flow requires adjacent exchange events. Set `allow_sequence_gaps=true` only when
+the input is intentionally an observed-event stream.
 """
-function microstructure_features(snapshots::AbstractVector{BookSnapshot})
+function microstructure_features(
+    snapshots::AbstractVector{BookSnapshot};
+    allow_sequence_gaps::Bool = false,
+)
     _validate_snapshot_session(snapshots)
+    if !allow_sequence_gaps
+        for index in 2:length(snapshots)
+            snapshots[index].sequence == snapshots[index - 1].sequence + 1 ||
+                throw(ArgumentError("signed order flow requires contiguous sequences"))
+        end
+    end
     rows = FeatureRow[]
     previous_complete = nothing
 

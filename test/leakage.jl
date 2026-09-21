@@ -172,4 +172,12 @@ end
         max_horizon = 2,
     )
     @test_throws ArgumentError ChronologicalSplit(-2:0, 3:5, 8:10, 2)
+    @test_throws ArgumentError walk_forward_splits(
+        BigInt(typemax(Int)) + 1;
+        train_size = 1,
+        validation_size = 1,
+        test_size = 1,
+        embargo = 0,
+        max_horizon = 0,
+    )
 end

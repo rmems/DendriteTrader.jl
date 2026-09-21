@@ -49,6 +49,19 @@ end
     @test [row.signed_order_flow for row in frame] == [0.0, 7.0, 0.0, -2.0, -5.0]
 end
 
+@testset "Microstructure features require contiguous exchange sequences by default" begin
+    snapshots = BookSnapshot[
+        BookSnapshot(:SIM, "XYZ", 100, 101, 1, [100 => 10], [102 => 12]),
+        BookSnapshot(:SIM, "XYZ", 200, 201, 3, [100 => 12], [102 => 12]),
+    ]
+
+    @test_throws ArgumentError microstructure_features(snapshots)
+
+    observed_events = microstructure_features(snapshots; allow_sequence_gaps = true)
+    @test [row.sequence for row in observed_events] == [1, 3]
+    @test observed_events[2].signed_order_flow == 2.0
+end
+
 @testset "Movement labels use exact future event horizons" begin
     session = load_session_jsonl(joinpath(@__DIR__, "fixtures", "book_session.jsonl"))
     snapshots = replay!(OrderBookState(:SIM, "XYZ"), session)
