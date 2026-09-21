@@ -1,0 +1,38 @@
+README.md
+  s_297df05a628b39::t_5eb6ffa0dea3a6 3-4,68
+  s_297df05a628b39::t_a86444743ae06a 8-12
+  s_297df05a628b39::t_5c6fcbda824f79 331,336
+docs/superpowers/plans/2026-09-20-snn-hft-experiments.md
+  s_297df05a628b39::t_1bf5a38edb2954 1-59,66-188
+src/backtest/Backtest.jl
+  s_297df05a628b39::t_5c6fcbda824f79 128-129,301-316
+  s_297df05a628b39::t_ee25a217ebae0c 242-253
+  s_297df05a628b39::t_2839377106ba23 265,290-297,390,393-394
+docs/make.jl
+  s_297df05a628b39::t_5eb6ffa0dea3a6 10,14,31
+  s_297df05a628b39::t_a86444743ae06a 19-24
+src/DendriteTrader.jl
+  s_297df05a628b39::t_2839377106ba23 220,222-224,228,231-233,633
+  s_297df05a628b39::t_d96090fda2e4b7 530-531,534-538,544-546,549,589-595,598-599
+test/runtests.jl
+  s_297df05a628b39::t_580214bd66197f 26-31,421,435,690-721,736-746
+  s_297df05a628b39::t_9921ccc2b96768 749-780,793-794
+docs/src/experiments.md
+  s_297df05a628b39::t_a86444743ae06a 1-68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "90335a337ada898ebbb74707df30648df6b60638",
+  "prompts": {},
+  "sessions": {
+    "s_297df05a628b39": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c1cd-1fd2-7531-a8c2-d37d211db070",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Raul Cardenas Montoya <montoyaraul34@gmail.com>"
+    }
+  }
+}
