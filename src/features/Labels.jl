@@ -46,14 +46,14 @@ function label_event_horizon(
     for index in 1:(length(snapshots) - horizon_events)
         anchor = snapshots[index]
         target = snapshots[index + horizon_events]
-        anchor_levels = _best_levels(anchor)
-        target_levels = _best_levels(target)
+        anchor_levels = _validated_top_of_book(anchor)
+        target_levels = _validated_top_of_book(target)
         (isnothing(anchor_levels) || isnothing(target_levels)) && continue
         anchor_bid, anchor_ask = anchor_levels
         target_bid, target_ask = target_levels
-        anchor_mid = (Float64(first(anchor_bid)) + first(anchor_ask)) / 2
-        target_mid = (Float64(first(target_bid)) + first(target_ask)) / 2
-        movement = target_mid - anchor_mid
+        anchor_mid_twice = BigInt(first(anchor_bid)) + BigInt(first(anchor_ask))
+        target_mid_twice = BigInt(first(target_bid)) + BigInt(first(target_ask))
+        movement = BigFloat(target_mid_twice - anchor_mid_twice) / 2
         label = movement > threshold_ticks ? Up : movement < -threshold_ticks ? Down : Flat
         push!(labels, MovementTarget(anchor.sequence, target.sequence, Int(horizon_events), label))
     end
