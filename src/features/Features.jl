@@ -6,7 +6,7 @@ using ..DendriteTrader: BookSnapshot
 
 export FeatureRow, FeatureFrame, microstructure_features
 export RollingZScore, fit!, transform!, normalization_parameters
-export MovementLabel, Down, Flat, Up, label_event_horizon
+export MovementLabel, MovementTarget, Down, Flat, Up, label_event_horizon
 
 include("Microstructure.jl")
 include("Normalization.jl")

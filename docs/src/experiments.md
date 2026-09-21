@@ -108,11 +108,13 @@ validation and test observations cannot change the training normalization eviden
 `normalization_parameters` returns the feature order, means, scales, and fitting
 boundary in JSON-serializable form.
 
-`label_event_horizon` compares complete snapshots at an exact future event offset
-and omits trailing rows that lack a target. Labels never cross the supplied session
-boundary. `walk_forward_splits` constructs expanding training windows with disjoint
-validation/test windows and explicit embargo gaps; it rejects an embargo shorter
-than the declared maximum feature or label horizon.
+`label_event_horizon` compares an anchor with the snapshot at the exact future event
+offset in the original stream. It omits incomplete anchors or exact targets rather
+than compressing time, and each `MovementTarget` records both sequences for
+unambiguous alignment. Sequence gaps are rejected by default. Labels never cross the
+supplied session boundary. `walk_forward_splits` constructs expanding training
+windows with disjoint validation/test windows and explicit embargo gaps; it rejects
+an embargo shorter than the declared maximum feature or label horizon.
 
 ## API reference
 
@@ -138,6 +140,7 @@ fit!
 transform!
 normalization_parameters
 label_event_horizon
+MovementTarget
 ChronologicalSplit
 walk_forward_splits
 ```
