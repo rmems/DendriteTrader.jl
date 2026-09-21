@@ -21,10 +21,15 @@ function fit!(normalizer::RollingZScore, training::FeatureFrame)
     means = ntuple(index -> sum(_feature_values(row)[index] / count for row in training), 5)
     all(isfinite, means) || throw(ArgumentError("training means must be finite"))
     scales = ntuple(5) do index
-        variance = sum((_feature_values(row)[index] - means[index])^2 for row in training) / count
-        scale = sqrt(variance)
+        max_deviation = maximum(abs(_feature_values(row)[index] - means[index]) for row in training)
+        isfinite(max_deviation) || throw(ArgumentError("training scales must be finite"))
+        iszero(max_deviation) && return 1.0
+        variance =
+            sum(((_feature_values(row)[index] - means[index]) / max_deviation)^2 for row in training) /
+            count
+        scale = max_deviation * sqrt(variance)
         isfinite(scale) || throw(ArgumentError("training scales must be finite"))
-        return iszero(scale) ? 1.0 : scale
+        return scale
     end
     normalizer.means = means
     normalizer.scales = scales
@@ -47,7 +52,7 @@ function transform!(normalizer::RollingZScore, frame::FeatureFrame)
         )
         push!(transformed, FeatureRow(row.exchange_ts_ns, row.sequence, normalized...))
     end
-    frame.rows = tuple(transformed...)
+    setfield!(frame, :rows, tuple(transformed...))
     return frame
 end
 
