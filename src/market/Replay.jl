@@ -1,17 +1,50 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
+function _copy_book(book::OrderBookState)
+    return OrderBookState(
+        book.venue,
+        book.instrument,
+        copy(book.bids),
+        copy(book.asks),
+        book.exchange_ts_ns,
+        book.receive_ts_ns,
+        book.sequence,
+    )
+end
+
+function _commit_book!(book::OrderBookState, source::OrderBookState)
+    empty!(book.bids)
+    merge!(book.bids, source.bids)
+    empty!(book.asks)
+    merge!(book.asks, source.asks)
+    book.exchange_ts_ns = source.exchange_ts_ns
+    book.receive_ts_ns = source.receive_ts_ns
+    book.sequence = source.sequence
+    return book
+end
+
+"""
+    replay!(book, events; policy=ReplayPolicy(), depth=typemax(Int))
+
+Transactionally apply a batch and return its snapshots. Any invalid argument or
+event leaves `book` exactly as it was before the call.
+"""
 function replay!(
     book::OrderBookState,
     events::AbstractVector{<:MarketEvent};
     policy::ReplayPolicy = ReplayPolicy(),
     depth::Integer = typemax(Int),
 )
+    0 <= depth <= typemax(Int) ||
+        throw(ArgumentError("depth must be between zero and typemax(Int)"))
+    scratch = _copy_book(book)
     snapshots = BookSnapshot[]
     sizehint!(snapshots, length(events))
     for event in events
-        apply!(book, event; policy = policy)
-        push!(snapshots, snapshot(book; depth = depth))
+        apply!(scratch, event; policy = policy)
+        push!(snapshots, snapshot(scratch; depth = depth))
     end
+    _commit_book!(book, scratch)
     return snapshots
 end
 
@@ -82,6 +115,7 @@ function _decode_event(record::AbstractDict)
     throw(ArgumentError("unknown market event type: $event_type"))
 end
 
+"""Load a non-empty, single-instrument `ReplaySession` from newline-delimited JSON."""
 function load_session_jsonl(path::AbstractString; policy::ReplayPolicy = ReplayPolicy())
     events = MarketEvent[]
     open(path, "r") do io

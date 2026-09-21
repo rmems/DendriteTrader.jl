@@ -1,11 +1,17 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
+"""Replay validation policy. Sequence gaps are rejected unless explicitly enabled."""
 struct ReplayPolicy
     allow_sequence_gaps::Bool
 end
 
 ReplayPolicy(; allow_sequence_gaps::Bool = false) = ReplayPolicy(allow_sequence_gaps)
 
+"""
+    ReplaySession(events; policy=ReplayPolicy())
+
+A copied, single-venue, single-instrument event sequence and its validation policy.
+"""
 struct ReplaySession <: AbstractVector{MarketEvent}
     venue::Symbol
     instrument::String
@@ -31,6 +37,7 @@ Base.IndexStyle(::Type{ReplaySession}) = IndexLinear()
 Base.size(session::ReplaySession) = size(session.events)
 Base.getindex(session::ReplaySession, index::Int) = session.events[index]
 
+"""Mutable integer-tick L2 book state for one venue and instrument."""
 mutable struct OrderBookState
     venue::Symbol
     instrument::String
@@ -76,6 +83,11 @@ function _advance!(book::OrderBookState, event::MarketEvent)
     return book
 end
 
+"""
+    apply!(book, event; policy=ReplayPolicy())
+
+Validate and apply one event. If validation fails, `book` remains unchanged.
+"""
 function apply!(book::OrderBookState, event::BookDelta; policy::ReplayPolicy = ReplayPolicy())
     _validate_order(book, event, policy)
     levels = event.side == Bid ? book.bids : book.asks
@@ -103,6 +115,7 @@ function apply!(book::OrderBookState, event::TradePrint; policy::ReplayPolicy = 
     return _advance!(book, event)
 end
 
+"""Copy up to `depth` price levels per side, sorting bids down and asks up."""
 function snapshot(book::OrderBookState; depth::Integer = typemax(Int))
     depth >= 0 || throw(ArgumentError("depth must be non-negative"))
     bids = sort!(collect(book.bids); by = first, rev = true)
@@ -121,11 +134,14 @@ function snapshot(book::OrderBookState; depth::Integer = typemax(Int))
     )
 end
 
+"""Return the best bid as `price_ticks => size`, or `nothing` for an empty side."""
 best_bid(book::OrderBookState) =
     isempty(book.bids) ? nothing : maximum(keys(book.bids)) => book.bids[maximum(keys(book.bids))]
+"""Return the best ask as `price_ticks => size`, or `nothing` for an empty side."""
 best_ask(book::OrderBookState) =
     isempty(book.asks) ? nothing : minimum(keys(book.asks)) => book.asks[minimum(keys(book.asks))]
 
+"""Return the integer spread, or `nothing` until both sides exist."""
 function spread_ticks(book::OrderBookState)
     bid = best_bid(book)
     ask = best_ask(book)
