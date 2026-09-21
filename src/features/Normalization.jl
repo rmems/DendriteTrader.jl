@@ -26,18 +26,18 @@ function fit!(normalizer::RollingZScore, training::FeatureFrame)
     end
     all(isfinite, means) || throw(ArgumentError("training means must be finite"))
     scales = ntuple(5) do index
-        mean_big = BigFloat(means[index])
-        max_deviation_big = maximum(
-            abs(BigFloat(_feature_values(row)[index]) - mean_big) for row in training
+        maximum_magnitude_big = maximum(
+            abs(BigFloat(_feature_values(row)[index])) for row in training
         )
-        isfinite(max_deviation_big) && abs(max_deviation_big) <= floatmax(Float64) ||
+        isfinite(maximum_magnitude_big) && abs(maximum_magnitude_big) <= floatmax(Float64) ||
             throw(ArgumentError("training scales must be finite"))
-        iszero(max_deviation_big) && return 1.0
+        iszero(maximum_magnitude_big) && return 1.0
+        scaled_mean = BigFloat(means[index]) / maximum_magnitude_big
         variance_big = sum(
-            ((BigFloat(_feature_values(row)[index]) - mean_big) / max_deviation_big)^2 for
+            (BigFloat(_feature_values(row)[index]) / maximum_magnitude_big - scaled_mean)^2 for
             row in training
         ) / count_big
-        scale_big = max_deviation_big * sqrt(variance_big)
+        scale_big = maximum_magnitude_big * sqrt(variance_big)
         isfinite(scale_big) && abs(scale_big) <= floatmax(Float64) ||
             throw(ArgumentError("training scales must be finite"))
         return Float64(scale_big)
