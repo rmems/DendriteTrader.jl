@@ -217,14 +217,19 @@ end
 
 """
     latency_ns(signal) -> Int64
+    latency_ns(signal, observed_ns) -> Int64
 
-End-to-end latency from signal creation to now (nanoseconds).
-Uses Unix epoch time to match Rust `timestamp_nanos` semantics.
+End-to-end latency from signal creation to an observation timestamp. The one-argument
+method uses the current Unix epoch time for live messages. Pass `observed_ns` during
+deterministic replay so results do not depend on the wall clock.
 """
 function latency_ns(s::TradeSignal)::Int64
     now_ns = round(Int64, time() * 1_000_000_000)
-    return max(0, now_ns - s.timestamp_ns)
+    return latency_ns(s, now_ns)
 end
+
+latency_ns(s::TradeSignal, observed_ns::Integer)::Int64 =
+    observed_ns <= s.timestamp_ns ? Int64(0) : Int64(observed_ns - s.timestamp_ns)
 
 """
     passes_gate(signal, threshold) -> Bool
@@ -606,7 +611,7 @@ function execute_signal!(
     if signal.side == Buy
         engine.positions[signal.ticker] = current + units
     elseif signal.side == Sell
-        engine.positions[signal.ticker] = max(0.0, current - units)
+        engine.positions[signal.ticker] = current - units
     end
 
     engine.executed_signals += 1

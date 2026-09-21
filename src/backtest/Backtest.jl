@@ -239,6 +239,18 @@ function estimate_n_periods(signals::Vector{TradeSignal}, n_returns::Int)::Tuple
     return (max(1, n_returns), false)
 end
 
+function mark_to_market(balance::Float64, positions::Dict{String, OpenPosition})
+    equity = balance
+    for pos in values(positions)
+        if pos.side == Buy
+            equity += (pos.last_mark_price - pos.entry_price) * pos.units
+        else
+            equity += (pos.entry_price - pos.last_mark_price) * pos.units
+        end
+    end
+    return equity
+end
+
 """
     run_backtest(config, signals; log_file=config.log_file) -> BacktestResult
 
@@ -250,8 +262,7 @@ Replay signals through the ExecutionEngine and compute performance metrics.
 - Positions are tracked as `(entry_price, entry_units, is_long)`.
 - A closing signal fully closes the open position using the **entry** units
   (all-or-nothing; partial cover / flip is not supported).
-- Open positions remaining at the end of the signal stream are **not**
-  marked-to-market; metrics reflect closed round-trips only.
+- Open positions are marked to the latest observed signal price at every step.
 - A second same-side signal while already open is ignored (first entry kept).
 """
 function run_backtest(
@@ -276,7 +287,14 @@ function run_backtest(
         # event is recorded for a fill that leaves the ledger unchanged.
         existing = get(positions, signal.ticker, nothing)
         if existing !== nothing && existing.side == signal.side
-            push!(equity_curve, balance)
+            positions[signal.ticker] = OpenPosition(
+                existing.entry_price,
+                existing.units,
+                existing.side,
+                existing.entry_commission,
+                signal.price,
+            )
+            push!(equity_curve, mark_to_market(balance, positions))
             continue
         end
 
@@ -354,18 +372,11 @@ function run_backtest(
             )
         end
 
-        push!(equity_curve, balance)
+        push!(equity_curve, mark_to_market(balance, positions))
     end
 
-    # Use final equity (MTM) for total_return so it matches equity_curve
-    final_equity = balance
-    for (_, pos) in positions
-        if pos.side == Buy
-            final_equity += (pos.last_mark_price - pos.entry_price) * pos.units
-        else
-            final_equity += (pos.entry_price - pos.last_mark_price) * pos.units
-        end
-    end
+    # Every curve point is marked to market, including the final point.
+    final_equity = last(equity_curve)
     final_balance = final_equity
     total_return = (final_equity - config.initial_balance) / config.initial_balance * 100.0
     max_dd = compute_max_drawdown(equity_curve)

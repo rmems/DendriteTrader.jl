@@ -23,6 +23,12 @@ using DendriteTrader
         @test !passes_gate(s, 0.95f0)
     end
 
+    @testset "latency_ns supports deterministic observation time" begin
+        signal = TradeSignal("MARKET-A", Buy, 100.0, 1.0, 0.9f0, 1_000)
+        @test latency_ns(signal, 1_750) == 750
+        @test latency_ns(signal, 500) == 0
+    end
+
     @testset "validate_signal" begin
         # Helper: valid signal dict
         valid = Dict(
@@ -412,7 +418,7 @@ using DendriteTrader
             @test engine.positions["MARKET-E"] < pos_after_buy
         end
 
-        @testset "Sell signal on empty position clamped to 0" begin
+        @testset "Sell signal on empty position opens a signed short" begin
             engine = ExecutionEngine()
             sell = TradeSignal(
                 Dict(
@@ -426,7 +432,7 @@ using DendriteTrader
             )
             dec = execute_signal!(engine, sell, 10_000.0)
             @test dec.executed
-            @test engine.positions["MARKET-F"] == 0.0
+            @test engine.positions["MARKET-F"] == -dec.position_units
         end
 
         @testset "Neutral signal rejected with 'neutral signal' reason" begin
@@ -679,6 +685,51 @@ using DendriteTrader
             result = run_backtest(cfg, signals)
             # Commission should reduce balance: units * price * 0.1%
             @test result.final_balance < cfg.initial_balance
+        end
+
+        @testset "equity curve marks open positions at every signal" begin
+            cfg = BacktestConfig(initial_balance = 10_000.0, max_position_size = 10.0)
+            signals = [
+                TradeSignal(
+                    Dict(
+                        "ticker" => "BTC-USD",
+                        "side" => "BUY",
+                        "price" => 100.0,
+                        "quantity" => 1.0,
+                        "confidence" => 0.92,
+                        "timestamp_ns" => 1_000_000_000,
+                    ),
+                ),
+                TradeSignal(
+                    Dict(
+                        "ticker" => "BTC-USD",
+                        "side" => "NEUTRAL",
+                        "price" => 110.0,
+                        "quantity" => 0.0,
+                        "confidence" => 0.92,
+                        "timestamp_ns" => 2_000_000_000,
+                    ),
+                ),
+            ]
+
+            result = run_backtest(cfg, signals)
+
+            @test result.equity_curve == [10_000.0, 10_000.0, 10_100.0]
+            @test result.final_balance == last(result.equity_curve)
+            @test result.total_return == 1.0
+        end
+
+        @testset "same-side observations update open-position marks" begin
+            cfg = BacktestConfig(initial_balance = 10_000.0, max_position_size = 10.0)
+            signals = [
+                TradeSignal("BTC-USD", Buy, 100.0, 1.0, 0.92f0, 1_000_000_000),
+                TradeSignal("BTC-USD", Buy, 90.0, 1.0, 0.92f0, 2_000_000_000),
+            ]
+
+            result = run_backtest(cfg, signals)
+
+            @test result.equity_curve == [10_000.0, 10_000.0, 9_900.0]
+            @test result.max_drawdown == 1.0
         end
 
         @testset "run_backtest with slippage and commission combined" begin
