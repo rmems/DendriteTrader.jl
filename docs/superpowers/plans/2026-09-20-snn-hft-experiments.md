@@ -57,12 +57,12 @@
 - Produces: `BookDelta`, `TradePrint`, `BookSnapshot`, `OrderBookState`, `ReplaySession`, `replay!`, and `load_session_jsonl`.
 - Invariant: events are strictly ordered by `(exchange_ts_ns, sequence)` and sequence gaps are rejected unless the session policy explicitly allows them.
 
-- [ ] **Step 1: Write fixture tests for add, reduce, delete, best bid/ask, spread, and depth snapshots.**
-- [ ] **Step 2: Run the replay tests and verify the market types are undefined.**
-- [ ] **Step 3: Implement integer-tick events and deterministic L2 book mutation.**
-- [ ] **Step 4: Add tests for duplicate sequences, gaps, crossed books, and out-of-order timestamps.**
-- [ ] **Step 5: Implement explicit replay validation errors and session policy.**
-- [ ] **Step 6: Run the full suite and commit the replay kernel.**
+- [x] **Step 1: Write fixture tests for add, reduce, delete, best bid/ask, spread, and depth snapshots.**
+- [x] **Step 2: Run the replay tests and verify the market types are undefined.**
+- [x] **Step 3: Implement integer-tick events and deterministic L2 book mutation.**
+- [x] **Step 4: Add tests for duplicate sequences, gaps, crossed books, and out-of-order timestamps.**
+- [x] **Step 5: Implement explicit replay validation errors and session policy.**
+- [x] **Step 6: Run the full suite and commit the replay kernel.**
 
 ### Task 3: Causal features, labels, and chronological splits
 
