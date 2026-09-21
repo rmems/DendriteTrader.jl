@@ -81,14 +81,14 @@
 - Produces: `FeatureFrame`, `FeatureRow`, `RollingZScore`, `fit!`, `transform!`, `MovementLabel`, `label_event_horizon`, `ChronologicalSplit`, and `walk_forward_splits`.
 - Consumes: ordered `BookSnapshot` values from Task 2.
 
-- [ ] **Step 1: Write hand-derived tests for spread, mid-price, microprice, imbalance, and signed order flow.**
-- [ ] **Step 2: Verify tests fail because the feature module is absent.**
-- [ ] **Step 3: Implement the five causal features without future access.**
-- [ ] **Step 4: Write leakage-canary tests proving validation/test values cannot affect training normalization.**
-- [ ] **Step 5: Implement training-only rolling normalization and serializable parameters.**
-- [ ] **Step 6: Write exact-boundary tests for event-horizon labels, session boundaries, and embargoes.**
-- [ ] **Step 7: Implement three-way movement labels and walk-forward split validation.**
-- [ ] **Step 8: Run the full suite and commit the causal dataset layer.**
+- [x] **Step 1: Write hand-derived tests for spread, mid-price, microprice, imbalance, and signed order flow.**
+- [x] **Step 2: Verify tests fail because the feature module is absent.**
+- [x] **Step 3: Implement the five causal features without future access.**
+- [x] **Step 4: Write leakage-canary tests proving validation/test values cannot affect training normalization.**
+- [x] **Step 5: Implement training-only rolling normalization and serializable parameters.**
+- [x] **Step 6: Write exact-boundary tests for event-horizon labels, session boundaries, and embargoes.**
+- [x] **Step 7: Implement three-way movement labels and walk-forward split validation.**
+- [x] **Step 8: Run the full suite and commit the causal dataset layer.**
 
 ### Task 4: Forecast, encoder, and baseline contracts
 

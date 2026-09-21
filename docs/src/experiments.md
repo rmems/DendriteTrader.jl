@@ -92,3 +92,51 @@ event leaves the destination book unchanged. A feed known to omit events or use
 non-contiguous sequence values may use `ReplayPolicy(allow_sequence_gaps=true)`
 explicitly; that assumption remains part of the `ReplaySession`. Trade prints
 advance event time and sequence but do not invent unobserved changes to L2 depth.
+
+## Causal dataset layer
+
+`microstructure_features` emits one row only after both sides of the book exist. Each
+row contains the integer spread, mid-price, size-weighted microprice, top-level
+imbalance, and signed top-of-book order flow. The calculation reads the current and
+immediately preceding complete snapshots only; it rejects mixed venues, mixed
+instruments, and non-monotonic event streams.
+
+`RollingZScore` is fit explicitly on a supplied training `FeatureFrame` and records
+the final training sequence. `transform!` never updates those fitted parameters, so
+validation and test observations cannot change the training normalization evidence.
+`normalization_parameters` returns the feature order, means, scales, and fitting
+boundary in JSON-serializable form.
+
+`label_event_horizon` compares complete snapshots at an exact future event offset
+and omits trailing rows that lack a target. Labels never cross the supplied session
+boundary. `walk_forward_splits` constructs expanding training windows with disjoint
+validation/test windows and explicit embargo gaps; it rejects an embargo shorter
+than the declared maximum feature or label horizon.
+
+## API reference
+
+```@docs
+BookDelta
+TradePrint
+BookSnapshot
+ReplayPolicy
+ReplaySession
+OrderBookState
+apply!
+snapshot
+best_bid
+best_ask
+spread_ticks
+replay!
+load_session_jsonl
+FeatureRow
+FeatureFrame
+microstructure_features
+RollingZScore
+fit!
+transform!
+normalization_parameters
+label_event_horizon
+ChronologicalSplit
+walk_forward_splits
+```
