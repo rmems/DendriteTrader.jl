@@ -80,6 +80,8 @@ function _validated_top_of_book(snapshot::BookSnapshot)
     bid, ask = levels
     bid_price, bid_size = first(bid), last(bid)
     ask_price, ask_size = first(ask), last(ask)
+    bid_price > 0 && ask_price > 0 ||
+        throw(ArgumentError("top-level prices must be positive"))
     bid_size > 0 && ask_size > 0 || throw(ArgumentError("top-level sizes must be positive"))
     ask_price >= bid_price || throw(ArgumentError("snapshot book is crossed"))
     return bid, ask
@@ -124,20 +126,20 @@ function _signed_order_flow(previous::BookSnapshot, current::BookSnapshot)
     previous_bid, previous_ask = previous_levels
     current_bid, current_ask = current_levels
     bid_flow = if first(current_bid) > first(previous_bid)
-        Float64(last(current_bid))
+        BigInt(last(current_bid))
     elseif first(current_bid) == first(previous_bid)
-        Float64(last(current_bid)) - Float64(last(previous_bid))
+        BigInt(last(current_bid)) - BigInt(last(previous_bid))
     else
-        -Float64(last(previous_bid))
+        -BigInt(last(previous_bid))
     end
     ask_flow = if first(current_ask) < first(previous_ask)
-        Float64(last(current_ask))
+        BigInt(last(current_ask))
     elseif first(current_ask) == first(previous_ask)
-        Float64(last(current_ask)) - Float64(last(previous_ask))
+        BigInt(last(current_ask)) - BigInt(last(previous_ask))
     else
-        -Float64(last(previous_ask))
+        -BigInt(last(previous_ask))
     end
-    return bid_flow - ask_flow
+    return Float64(bid_flow - ask_flow)
 end
 
 """
@@ -158,7 +160,7 @@ function microstructure_features(snapshots::AbstractVector{BookSnapshot})
         bid, ask = levels
         bid_price, bid_size = first(bid), last(bid)
         ask_price, ask_size = first(ask), last(ask)
-        spread = Float64(ask_price) - Float64(bid_price)
+        spread = Float64(BigInt(ask_price) - BigInt(bid_price))
         total_size = Float64(bid_size) + Float64(ask_size)
         mid = (Float64(bid_price) + Float64(ask_price)) / 2
         microprice = (Float64(ask_price) * bid_size + Float64(bid_price) * ask_size) / total_size
