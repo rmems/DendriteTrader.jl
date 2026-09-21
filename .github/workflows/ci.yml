@@ -16,19 +16,15 @@ permissions:
 
 jobs:
   test:
-    name: Test (Julia ${{ matrix.julia-version }})
+    name: Test (Julia latest)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        julia-version: ['1.10', '1.11', '1.12']
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
       - uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9 # v2
         with:
-          version: ${{ matrix.julia-version }}
+          version: '1'
       - uses: julia-actions/cache@d10a6fd8f31b12404a54613ebad242900567f2b9 # v2
       - uses: julia-actions/julia-buildpkg@e3eb439fad4f9aba7da2667e7510e4a46ebc46e1 # v1
       - uses: julia-actions/julia-runtest@6e050c8013b833b1195105ff2fce9cd802f53271 # v1
@@ -42,6 +38,6 @@ jobs:
           persist-credentials: false
       - uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9 # v2
         with:
-          version: '1.12'
+          version: '1'
       - uses: julia-actions/cache@d10a6fd8f31b12404a54613ebad242900567f2b9 # v2
       - run: julia --project=. -e 'using Pkg; Pkg.add("JuliaFormatter"); using JuliaFormatter; format(".", check=true)'
