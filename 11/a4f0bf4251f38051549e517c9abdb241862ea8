@@ -1,0 +1,53 @@
+test/fixtures/book_session.jsonl
+  s_297df05a628b39::t_1dd32d74630adf 1-6
+src/DendriteTrader.jl
+  s_297df05a628b39::t_2d96aa8a684a81 110-114,117
+  s_297df05a628b39::t_cd166bc4e6857e 115
+  s_297df05a628b39::t_148adb27e7afda 116
+src/market/Events.jl
+  s_297df05a628b39::t_2d96aa8a684a81 1-18,45-55,83-88,90-92,108
+  s_297df05a628b39::t_6d50e9f15f2e82 19-44,56-82,93-103,106-107,109-113,115-117
+  s_297df05a628b39::t_cd166bc4e6857e 89,104-105,114
+docs/src/experiments.md
+  s_297df05a628b39::t_9920ad8f5d5428 69-94
+src/market/OrderBook.jl
+  s_297df05a628b39::t_6d50e9f15f2e82 45,57-63,66-73,75-78,80-100,102-116,118-133
+  s_297df05a628b39::t_2d96aa8a684a81 1-8,34-39,41-44,46-50,52-56
+  s_297df05a628b39::t_cd166bc4e6857e 9-33,40,51,64-65,74,117
+docs/superpowers/plans/2026-09-20-snn-hft-experiments.md
+  s_297df05a628b39::t_9920ad8f5d5428 60-64
+  s_297df05a628b39::t_a71b8fd525a888 65
+test/market_replay.jl
+  s_297df05a628b39::t_6d50e9f15f2e82 59-60
+  s_297df05a628b39::t_3238d28b1a92e4 82-83
+  s_297df05a628b39::t_1dd32d74630adf 1-16,18-19,23-27,137-138
+  s_297df05a628b39::t_148adb27e7afda 20-22,28-42,44-55,57-58,61-81,84-95,97-136
+  s_297df05a628b39::t_fedb565168b5e7 17,43,56,96
+src/market/Replay.jl
+  s_297df05a628b39::t_6d50e9f15f2e82 3-17,25-84,86-97,100-103,105
+  s_297df05a628b39::t_2d96aa8a684a81 1-2
+  s_297df05a628b39::t_cd166bc4e6857e 19-24,85,104
+src/market/Market.jl
+  s_297df05a628b39::t_6d50e9f15f2e82 6
+  s_297df05a628b39::t_cd166bc4e6857e 10
+  s_297df05a628b39::t_148adb27e7afda 11
+  s_297df05a628b39::t_2d96aa8a684a81 1-5,7-9,12-17
+test/runtests.jl
+  s_297df05a628b39::t_1dd32d74630adf 1264
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "11a4f0bf4251f38051549e517c9abdb241862ea8",
+  "prompts": {},
+  "sessions": {
+    "s_297df05a628b39": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c1cd-1fd2-7531-a8c2-d37d211db070",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Raul Cardenas Montoya <montoyaraul34@gmail.com>"
+    }
+  }
+}
