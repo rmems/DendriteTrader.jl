@@ -6,42 +6,56 @@
     Up = 1
 end
 
-function _complete_mid_prices(snapshots::AbstractVector{BookSnapshot})
-    observations = Tuple{Int64, Float64}[]
-    for snapshot in snapshots
-        levels = _best_levels(snapshot)
-        isnothing(levels) && continue
-        bid, ask = levels
-        push!(observations, (snapshot.sequence, (Float64(first(bid)) + first(ask)) / 2))
-    end
-    return observations
+"""A movement label with explicit anchor and exact target event sequences."""
+struct MovementTarget
+    anchor_sequence::Int64
+    target_sequence::Int64
+    horizon_events::Int
+    label::MovementLabel
 end
 
 """
     label_event_horizon(snapshots; horizon_events, threshold_ticks=0)
 
-Label each complete snapshot against exactly `horizon_events` later complete
-snapshots. The trailing observations without a target are omitted.
+Label complete snapshots against the snapshot exactly `horizon_events` later in the
+original event stream. Incomplete anchors or targets and trailing observations are
+omitted. Sequence gaps are rejected unless `allow_sequence_gaps=true` explicitly
+defines the horizon in observed rather than exchange events.
 """
 function label_event_horizon(
     snapshots::AbstractVector{BookSnapshot};
     horizon_events::Integer,
     threshold_ticks::Real = 0,
+    allow_sequence_gaps::Bool = false,
 )
     _validate_snapshot_session(snapshots)
     horizon_events > 0 || throw(ArgumentError("horizon_events must be positive"))
     isfinite(threshold_ticks) && threshold_ticks >= 0 ||
         throw(ArgumentError("threshold_ticks must be finite and non-negative"))
-    observations = _complete_mid_prices(snapshots)
-    horizon_events < length(observations) ||
-        throw(ArgumentError("horizon_events must be shorter than the usable session"))
+    horizon_events < length(snapshots) ||
+        throw(ArgumentError("horizon_events must be shorter than the session"))
+    if !allow_sequence_gaps
+        for index in 2:length(snapshots)
+            snapshots[index].sequence == snapshots[index - 1].sequence + 1 ||
+                throw(ArgumentError("exact event horizons require contiguous sequences"))
+        end
+    end
 
-    labels = MovementLabel[]
-    sizehint!(labels, length(observations) - horizon_events)
-    for index in 1:(length(observations) - horizon_events)
-        movement = observations[index + horizon_events][2] - observations[index][2]
+    labels = MovementTarget[]
+    sizehint!(labels, length(snapshots) - horizon_events)
+    for index in 1:(length(snapshots) - horizon_events)
+        anchor = snapshots[index]
+        target = snapshots[index + horizon_events]
+        anchor_levels = _best_levels(anchor)
+        target_levels = _best_levels(target)
+        (isnothing(anchor_levels) || isnothing(target_levels)) && continue
+        anchor_bid, anchor_ask = anchor_levels
+        target_bid, target_ask = target_levels
+        anchor_mid = (Float64(first(anchor_bid)) + first(anchor_ask)) / 2
+        target_mid = (Float64(first(target_bid)) + first(target_ask)) / 2
+        movement = target_mid - anchor_mid
         label = movement > threshold_ticks ? Up : movement < -threshold_ticks ? Down : Flat
-        push!(labels, label)
+        push!(labels, MovementTarget(anchor.sequence, target.sequence, Int(horizon_events), label))
     end
     return labels
 end

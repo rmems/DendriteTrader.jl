@@ -14,6 +14,7 @@ using DendriteTrader
         :transform!,
         :normalization_parameters,
         :MovementLabel,
+        :MovementTarget,
         :Down,
         :Flat,
         :Up,
@@ -52,12 +53,16 @@ end
     session = load_session_jsonl(joinpath(@__DIR__, "fixtures", "book_session.jsonl"))
     snapshots = replay!(OrderBookState(:SIM, "XYZ"), session)
 
-    @test label_event_horizon(snapshots; horizon_events = 1) == [Up, Flat, Flat, Down]
-    @test label_event_horizon(snapshots; horizon_events = 2) == [Up, Flat, Down]
-    @test label_event_horizon(snapshots; horizon_events = 1, threshold_ticks = 0.5) ==
-          [Flat, Flat, Flat, Flat]
+    one_event = label_event_horizon(snapshots; horizon_events = 1)
+    two_events = label_event_horizon(snapshots; horizon_events = 2)
+    thresholded = label_event_horizon(snapshots; horizon_events = 1, threshold_ticks = 0.5)
+
+    @test [target.label for target in one_event] == [Up, Flat, Flat, Down]
+    @test [(target.anchor_sequence, target.target_sequence) for target in one_event] == [(2, 3), (3, 4), (4, 5), (5, 6)]
+    @test [target.label for target in two_events] == [Up, Flat, Down]
+    @test [target.label for target in thresholded] == [Flat, Flat, Flat, Flat]
     @test_throws ArgumentError label_event_horizon(snapshots; horizon_events = 0)
-    @test_throws ArgumentError label_event_horizon(snapshots; horizon_events = 5)
+    @test_throws ArgumentError label_event_horizon(snapshots; horizon_events = 6)
 end
 
 @testset "Training-fitted normalization" begin
@@ -75,4 +80,8 @@ end
     @test frame[2].signed_order_flow == 1.0
     @test JSON.parse(JSON.json(normalization_parameters(normalizer)))["fitted_through_sequence"] ==
           2
+
+    replacement = FeatureRow(300, 3, 0, 0, 0, 0, 0)
+    @test_throws Base.CanonicalIndexError setindex!(frame, replacement, 1)
+    @test_throws ArgumentError setproperty!(frame, :rows, (replacement, frame[2]))
 end
