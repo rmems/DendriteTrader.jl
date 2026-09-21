@@ -163,6 +163,15 @@ end
     @test all(isfinite, normalizer.scales)
 end
 
+@testset "Normalization uses a nonzero scale for constant features" begin
+    training = FeatureFrame([feature_row(1, 7.0), feature_row(2, 7.0)])
+    normalizer = fit!(RollingZScore(), training)
+    transformed = transform!(normalizer, FeatureFrame(collect(training.rows)))
+
+    @test normalizer.scales == ntuple(_ -> 1.0, 5)
+    @test all(row -> row.spread_ticks == 0.0, transformed)
+end
+
 @testset "Normalization transformation avoids redundant full-frame copies" begin
     rows = [feature_row(sequence, Float64(sequence)) for sequence in 1:10_000]
     normalizer = fit!(RollingZScore(), FeatureFrame(rows))

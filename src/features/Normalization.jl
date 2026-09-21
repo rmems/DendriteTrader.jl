@@ -37,6 +37,7 @@ function fit!(normalizer::RollingZScore, training::FeatureFrame)
             (BigFloat(_feature_values(row)[index]) / maximum_magnitude_big - scaled_mean)^2 for
             row in training
         ) / count_big
+        iszero(variance_big) && return 1.0
         scale_big = maximum_magnitude_big * sqrt(variance_big)
         isfinite(scale_big) && abs(scale_big) <= floatmax(Float64) ||
             throw(ArgumentError("training scales must be finite"))
