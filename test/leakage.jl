@@ -66,6 +66,71 @@ end
     @test only(allowed).target_sequence == 4
 end
 
+@testset "Snapshot clocks are valid for direct snapshots" begin
+    impossible = BookSnapshot(:SIM, "XYZ", 100, 50, 1, [100 => 10], [102 => 10])
+
+    @test_throws ArgumentError microstructure_features([impossible])
+end
+
+@testset "Top-of-book arithmetic handles Int64 sizes" begin
+    largest_size = typemax(Int64)
+    snapshot = BookSnapshot(
+        :SIM,
+        "XYZ",
+        100,
+        110,
+        1,
+        [100 => largest_size],
+        [102 => largest_size],
+    )
+
+    row = only(microstructure_features([snapshot]))
+    @test row.imbalance == 0.0
+    @test row.microprice_ticks == 101.0
+end
+
+@testset "Labels reject malformed top-of-book snapshots" begin
+    malformed = BookSnapshot(:SIM, "XYZ", 100, 110, 1, [100 => 0], [102 => 10])
+    target = BookSnapshot(:SIM, "XYZ", 200, 210, 2, [101 => 10], [103 => 10])
+
+    @test_throws ArgumentError label_event_horizon([malformed, target]; horizon_events = 1)
+end
+
+@testset "Labels retain one tick at large Int64 prices" begin
+    boundary = Int64(1) << 53
+    anchor = BookSnapshot(:SIM, "XYZ", 100, 110, 1, [boundary => 10], [boundary => 10])
+    target = BookSnapshot(
+        :SIM,
+        "XYZ",
+        200,
+        210,
+        2,
+        [boundary + 1 => 10],
+        [boundary + 1 => 10],
+    )
+
+    @test only(label_event_horizon([anchor, target]; horizon_events = 1)).label == Up
+end
+
+@testset "Normalization handles finite large-magnitude training rows" begin
+    training = FeatureFrame([feature_row(1, 1.0e200), feature_row(2, -1.0e200)])
+
+    normalizer = fit!(RollingZScore(), training)
+
+    @test normalizer.means == ntuple(_ -> 0.0, 5)
+    @test normalizer.scales == ntuple(_ -> 1.0e200, 5)
+end
+
+@testset "Normalization transformation avoids redundant full-frame copies" begin
+    rows = [feature_row(sequence, Float64(sequence)) for sequence in 1:10_000]
+    normalizer = fit!(RollingZScore(), FeatureFrame(rows))
+
+    transform!(normalizer, FeatureFrame(rows))
+    allocated = @allocated transform!(normalizer, FeatureFrame(rows))
+
+    @test allocated < 3_500_000
+end
+
 @testset "Embargoed chronological walk-forward splits" begin
     splits = walk_forward_splits(
         52;
