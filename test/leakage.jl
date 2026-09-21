@@ -72,6 +72,29 @@ end
     @test_throws ArgumentError microstructure_features([impossible])
 end
 
+@testset "Direct snapshots enforce non-empty identities" begin
+    missing_venue = BookSnapshot(Symbol(""), "XYZ", 100, 110, 1, [100 => 10], [102 => 10])
+    missing_instrument = BookSnapshot(:SIM, "", 100, 110, 1, [100 => 10], [102 => 10])
+
+    @test_throws ArgumentError microstructure_features([missing_venue])
+    @test_throws ArgumentError label_event_horizon([missing_venue, missing_venue]; horizon_events = 1)
+    @test_throws ArgumentError microstructure_features([missing_instrument])
+    @test_throws ArgumentError label_event_horizon(
+        [missing_instrument, missing_instrument];
+        horizon_events = 1,
+    )
+end
+
+@testset "Duplicate top prices are rejected for direct snapshots" begin
+    duplicated_bid_prices =
+        BookSnapshot(:SIM, "XYZ", 100, 110, 1, [100 => 10, 100 => 11], [102 => 10])
+    duplicated_ask_prices =
+        BookSnapshot(:SIM, "XYZ", 100, 110, 1, [100 => 10], [102 => 11, 102 => 10])
+
+    @test_throws ArgumentError microstructure_features([duplicated_bid_prices])
+    @test_throws ArgumentError microstructure_features([duplicated_ask_prices])
+end
+
 @testset "Top-of-book arithmetic handles Int64 sizes" begin
     largest_size = typemax(Int64)
     snapshot = BookSnapshot(
@@ -112,6 +135,15 @@ end
     @test only(label_event_horizon([anchor, target]; horizon_events = 1)).label == Up
 end
 
+@testset "Labels handle unsigned thresholds without wraparound" begin
+    flat = BookSnapshot(:SIM, "XYZ", 100, 110, 1, [100 => 10], [102 => 10])
+    unchanged = BookSnapshot(:SIM, "XYZ", 200, 210, 2, [100 => 10], [102 => 10])
+
+    labels = label_event_horizon([flat, unchanged]; horizon_events = 1, threshold_ticks = UInt(1))
+
+    @test only(labels).label == Flat
+end
+
 @testset "Normalization handles finite large-magnitude training rows" begin
     training = FeatureFrame([feature_row(1, 1.0e200), feature_row(2, -1.0e200)])
 
@@ -119,6 +151,16 @@ end
 
     @test normalizer.means == ntuple(_ -> 0.0, 5)
     @test normalizer.scales == ntuple(_ -> 1.0e200, 5)
+end
+
+@testset "Normalization handles Float64 boundary values" begin
+    high = floatmax(Float64)
+    training = FeatureFrame([feature_row(1, high), feature_row(2, high), feature_row(3, -high)])
+
+    normalizer = fit!(RollingZScore(), training)
+
+    @test all(isfinite, normalizer.means)
+    @test all(isfinite, normalizer.scales)
 end
 
 @testset "Normalization transformation avoids redundant full-frame copies" begin
@@ -179,5 +221,13 @@ end
         test_size = 1,
         embargo = 0,
         max_horizon = 0,
+    )
+    @test_throws ArgumentError walk_forward_splits(
+        typemax(Int);
+        train_size = typemax(Int) - 4,
+        validation_size = 1,
+        test_size = 1,
+        embargo = 1,
+        max_horizon = 1,
     )
 end

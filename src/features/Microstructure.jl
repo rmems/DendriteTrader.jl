@@ -69,8 +69,23 @@ end
 function _best_levels(snapshot::BookSnapshot)
     isempty(snapshot.bids) && return nothing
     isempty(snapshot.asks) && return nothing
-    bid = snapshot.bids[argmax(first.(snapshot.bids))]
-    ask = snapshot.asks[argmin(first.(snapshot.asks))]
+    bid = first(snapshot.bids)
+    bid_prices = Set{Int64}((first(bid),))
+    for level in @view snapshot.bids[2:end]
+        price = first(level)
+        price ∉ bid_prices || throw(ArgumentError("bid price levels must be unique"))
+        push!(bid_prices, price)
+        price > first(bid) && (bid = level)
+    end
+
+    ask = first(snapshot.asks)
+    ask_prices = Set{Int64}((first(ask),))
+    for level in @view snapshot.asks[2:end]
+        price = first(level)
+        price ∉ ask_prices || throw(ArgumentError("ask price levels must be unique"))
+        push!(ask_prices, price)
+        price < first(ask) && (ask = level)
+    end
     return bid, ask
 end
 
@@ -93,6 +108,8 @@ function _validate_snapshot_session(snapshots::AbstractVector{BookSnapshot})
     previous_exchange_timestamp = Int64(0)
     previous_receive_timestamp = Int64(0)
     for snapshot in snapshots
+        isempty(String(snapshot.venue)) && throw(ArgumentError("venue must be non-empty"))
+        isempty(snapshot.instrument) && throw(ArgumentError("instrument must be non-empty"))
         snapshot.venue == venue || throw(ArgumentError("snapshots must belong to one venue"))
         snapshot.instrument == instrument ||
             throw(ArgumentError("snapshots must belong to one instrument"))
@@ -120,7 +137,13 @@ function _signed_order_flow(previous::BookSnapshot, current::BookSnapshot)
     current_levels = _validated_top_of_book(current)
     isnothing(previous_levels) && return 0.0
     isnothing(current_levels) && return 0.0
+    return _signed_order_flow(previous_levels, current_levels)
+end
 
+function _signed_order_flow(
+    previous_levels::Tuple{Pair{Int64, Int64}, Pair{Int64, Int64}},
+    current_levels::Tuple{Pair{Int64, Int64}, Pair{Int64, Int64}},
+)
     previous_bid, previous_ask = previous_levels
     current_bid, current_ask = current_levels
     bid_flow = if first(current_bid) > first(previous_bid)
@@ -161,7 +184,7 @@ function microstructure_features(
         end
     end
     rows = FeatureRow[]
-    previous_complete = nothing
+    previous_complete_levels = nothing
 
     for current in snapshots
         levels = _validated_top_of_book(current)
@@ -175,7 +198,8 @@ function microstructure_features(
         microprice = (Float64(ask_price) * bid_size + Float64(bid_price) * ask_size) / total_size
         imbalance = (Float64(bid_size) - Float64(ask_size)) / total_size
         order_flow =
-            isnothing(previous_complete) ? 0.0 : _signed_order_flow(previous_complete, current)
+            isnothing(previous_complete_levels) ? 0.0 :
+            _signed_order_flow(previous_complete_levels, levels)
         push!(
             rows,
             FeatureRow(
@@ -188,7 +212,7 @@ function microstructure_features(
                 order_flow,
             ),
         )
-        previous_complete = current
+        previous_complete_levels = levels
     end
     return FeatureFrame(rows)
 end

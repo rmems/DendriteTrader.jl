@@ -23,9 +23,9 @@ struct ChronologicalSplit
             throw(ArgumentError("train range must precede validation range"))
         last(validation) < first(test) ||
             throw(ArgumentError("validation range must precede test range"))
-        first(validation) - last(train) - 1 == embargo ||
+        _split_gap(first(validation), last(train)) == embargo ||
             throw(ArgumentError("train/validation embargo does not match"))
-        first(test) - last(validation) - 1 == embargo ||
+        _split_gap(first(test), last(validation)) == embargo ||
             throw(ArgumentError("validation/test embargo does not match"))
         return new(train, validation, test, embargo)
     end
@@ -42,6 +42,15 @@ function _split_boundary(left::Int, right::Int)
     catch error
         error isa OverflowError || rethrow()
         throw(ArgumentError("split boundary exceeds Int range"))
+    end
+end
+
+function _split_gap(start_index::Int, end_index::Int)
+    try
+        return Base.checked_sub(Base.checked_sub(start_index, end_index), 1)
+    catch error
+        error isa OverflowError || rethrow()
+        throw(ArgumentError("split gap exceeds Int range"))
     end
 end
 
@@ -79,6 +88,9 @@ function walk_forward_splits(
         validation_end = _split_boundary(validation_start, validation_size_int - 1)
         test_start = _split_boundary(_split_boundary(validation_end, embargo_int), 1)
         test_end = _split_boundary(test_start, test_size_int - 1)
+        validation_start <= n_int || break
+        validation_end <= n_int || break
+        test_start <= n_int || break
         test_end <= n_int || break
         push!(
             splits,

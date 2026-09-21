@@ -17,19 +17,30 @@ _feature_values(row::FeatureRow) =
 function fit!(normalizer::RollingZScore, training::FeatureFrame)
     isempty(training) && throw(ArgumentError("training frame must be non-empty"))
     _validate_feature_rows(training.rows)
-    count = length(training)
-    means = ntuple(index -> sum(_feature_values(row)[index] / count for row in training), 5)
+    count_big = BigFloat(length(training))
+    means = ntuple(5) do index
+        mean_big = sum(BigFloat(_feature_values(row)[index]) for row in training) / count_big
+        isfinite(mean_big) && abs(mean_big) <= floatmax(Float64) ||
+            throw(ArgumentError("training means must be finite"))
+        Float64(mean_big)
+    end
     all(isfinite, means) || throw(ArgumentError("training means must be finite"))
     scales = ntuple(5) do index
-        max_deviation = maximum(abs(_feature_values(row)[index] - means[index]) for row in training)
-        isfinite(max_deviation) || throw(ArgumentError("training scales must be finite"))
-        iszero(max_deviation) && return 1.0
-        variance =
-            sum(((_feature_values(row)[index] - means[index]) / max_deviation)^2 for row in training) /
-            count
-        scale = max_deviation * sqrt(variance)
-        isfinite(scale) || throw(ArgumentError("training scales must be finite"))
-        return scale
+        mean_big = BigFloat(means[index])
+        max_deviation_big = maximum(
+            abs(BigFloat(_feature_values(row)[index]) - mean_big) for row in training
+        )
+        isfinite(max_deviation_big) && abs(max_deviation_big) <= floatmax(Float64) ||
+            throw(ArgumentError("training scales must be finite"))
+        iszero(max_deviation_big) && return 1.0
+        variance_big = sum(
+            ((BigFloat(_feature_values(row)[index]) - mean_big) / max_deviation_big)^2 for
+            row in training
+        ) / count_big
+        scale_big = max_deviation_big * sqrt(variance_big)
+        isfinite(scale_big) && abs(scale_big) <= floatmax(Float64) ||
+            throw(ArgumentError("training scales must be finite"))
+        return Float64(scale_big)
     end
     normalizer.means = means
     normalizer.scales = scales
