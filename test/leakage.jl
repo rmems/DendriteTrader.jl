@@ -207,6 +207,26 @@ end
     @test constrained_precision == default_precision
 end
 
+@testset "Labels preserve exact thresholds beyond the local BigFloat precision" begin
+    anchor = BookSnapshot(:SIM, "XYZ", 100, 110, 1, [100 => 10], [102 => 10])
+    target = BookSnapshot(:SIM, "XYZ", 200, 210, 2, [101 => 10], [103 => 10])
+    threshold = 1 - 1 // big(2)^300
+
+    labels = label_event_horizon([anchor, target]; horizon_events = 1, threshold_ticks = threshold)
+
+    @test only(labels).label == Up
+end
+
+@testset "Labels avoid overflow for fixed-width rational thresholds" begin
+    anchor = BookSnapshot(:SIM, "XYZ", 100, 110, 1, [100 => 10], [102 => 10])
+    target = BookSnapshot(:SIM, "XYZ", 200, 210, 2, [101 => 10], [103 => 10])
+    threshold = typemax(Int64) // 3
+
+    labels = label_event_horizon([anchor, target]; horizon_events = 1, threshold_ticks = threshold)
+
+    @test only(labels).label == Flat
+end
+
 @testset "Normalization handles finite large-magnitude training rows" begin
     training = FeatureFrame([feature_row(1, 1.0e200), feature_row(2, -1.0e200)])
 
@@ -223,6 +243,36 @@ end
 
     @test normalizer.means == ntuple(_ -> 1.0, 5)
     @test normalizer.scales == ntuple(_ -> eps(Float64) / 2, 5)
+end
+
+@testset "Normalization fitting is independent of ambient BigFloat precision" begin
+    training = FeatureFrame([feature_row(1, 1.0), feature_row(2, nextfloat(1.0))])
+
+    default_precision = fit!(RollingZScore(), training)
+    constrained_precision = setprecision(BigFloat, 2) do
+        fit!(RollingZScore(), training)
+    end
+
+    @test constrained_precision.means == default_precision.means
+    @test constrained_precision.scales == default_precision.scales
+end
+
+@testset "Normalization falls back when a finite scale rounds to zero" begin
+    training = FeatureFrame(
+        [
+            feature_row(1, 0.0),
+            feature_row(2, 0.0),
+            feature_row(3, 0.0),
+            feature_row(4, 0.0),
+            feature_row(5, nextfloat(0.0)),
+        ],
+    )
+
+    normalizer = fit!(RollingZScore(), training)
+    transformed = transform!(normalizer, FeatureFrame(collect(training.rows)))
+
+    @test normalizer.scales == ntuple(_ -> 1.0, 5)
+    @test all(row -> isfinite(row.spread_ticks), transformed)
 end
 
 @testset "Normalization handles Float64 boundary values" begin

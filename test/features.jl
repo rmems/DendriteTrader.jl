@@ -62,6 +62,27 @@ end
     @test observed_events[2].signed_order_flow == 2.0
 end
 
+@testset "Microstructure features reject nonpositive top prices" begin
+    snapshots = [
+        BookSnapshot(:SIM, "XYZ", 100, 110, 1, [-2 => 10], [-1 => 10]),
+        BookSnapshot(:SIM, "XYZ", 200, 210, 2, [-2 => 10], [-1 => 10]),
+    ]
+
+    @test_throws ArgumentError microstructure_features(snapshots)
+end
+
+@testset "Signed order flow preserves single-unit changes above Float64 precision" begin
+    large_size = Int64(1) << 53
+    snapshots = [
+        BookSnapshot(:SIM, "XYZ", 100, 110, 1, [100 => large_size], [102 => 10]),
+        BookSnapshot(:SIM, "XYZ", 200, 210, 2, [100 => large_size + 1], [102 => 10]),
+    ]
+
+    frame = microstructure_features(snapshots)
+
+    @test frame[2].signed_order_flow == 1.0
+end
+
 @testset "Movement labels use exact future event horizons" begin
     session = load_session_jsonl(joinpath(@__DIR__, "fixtures", "book_session.jsonl"))
     snapshots = replay!(OrderBookState(:SIM, "XYZ"), session)

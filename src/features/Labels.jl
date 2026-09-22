@@ -14,6 +14,26 @@ struct MovementTarget
     label::MovementLabel
 end
 
+function _movement_label(movement_twice::Int128, threshold_ticks::Integer)
+    threshold_twice = BigInt(2) * BigInt(threshold_ticks)
+    return movement_twice > threshold_twice ? Up : movement_twice < -threshold_twice ? Down : Flat
+end
+
+function _movement_label(movement_twice::Int128, threshold_ticks::Rational)
+    movement_scaled = BigInt(movement_twice) * BigInt(denominator(threshold_ticks))
+    threshold_scaled = BigInt(2) * BigInt(numerator(threshold_ticks))
+    return movement_scaled > threshold_scaled ? Up : movement_scaled < -threshold_scaled ? Down : Flat
+end
+
+function _movement_label(movement_twice::Int128, threshold_ticks::Real)
+    return setprecision(BigFloat, 256) do
+        threshold_twice = 2 * BigFloat(threshold_ticks)
+        movement_twice_big = BigFloat(movement_twice)
+        movement_twice_big > threshold_twice ? Up :
+        movement_twice_big < -threshold_twice ? Down : Flat
+    end
+end
+
 """
     label_event_horizon(snapshots; horizon_events, threshold_ticks=0)
 
@@ -41,26 +61,21 @@ function label_event_horizon(
         end
     end
 
-    return setprecision(BigFloat, 256) do
-        threshold_twice = 2 * BigFloat(threshold_ticks)
-        labels = MovementTarget[]
-        sizehint!(labels, length(snapshots) - horizon_events)
-        for index in 1:(length(snapshots) - horizon_events)
-            anchor = snapshots[index]
-            target = snapshots[index + horizon_events]
-            anchor_levels = _validated_top_of_book(anchor)
-            target_levels = _validated_top_of_book(target)
-            (isnothing(anchor_levels) || isnothing(target_levels)) && continue
-            anchor_bid, anchor_ask = anchor_levels
-            target_bid, target_ask = target_levels
-            anchor_mid_twice = Int128(first(anchor_bid)) + Int128(first(anchor_ask))
-            target_mid_twice = Int128(first(target_bid)) + Int128(first(target_ask))
-            movement_twice = BigFloat(target_mid_twice - anchor_mid_twice)
-            label =
-                movement_twice > threshold_twice ? Up :
-                movement_twice < -threshold_twice ? Down : Flat
-            push!(labels, MovementTarget(anchor.sequence, target.sequence, Int(horizon_events), label))
-        end
-        labels
+    labels = MovementTarget[]
+    sizehint!(labels, length(snapshots) - horizon_events)
+    for index in 1:(length(snapshots) - horizon_events)
+        anchor = snapshots[index]
+        target = snapshots[index + horizon_events]
+        anchor_levels = _validated_top_of_book(anchor)
+        target_levels = _validated_top_of_book(target)
+        (isnothing(anchor_levels) || isnothing(target_levels)) && continue
+        anchor_bid, anchor_ask = anchor_levels
+        target_bid, target_ask = target_levels
+        anchor_mid_twice = Int128(first(anchor_bid)) + Int128(first(anchor_ask))
+        target_mid_twice = Int128(first(target_bid)) + Int128(first(target_ask))
+        movement_twice = target_mid_twice - anchor_mid_twice
+        label = _movement_label(movement_twice, threshold_ticks)
+        push!(labels, MovementTarget(anchor.sequence, target.sequence, Int(horizon_events), label))
     end
+    return labels
 end
