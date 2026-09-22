@@ -26,7 +26,9 @@ function _movement_label(movement_twice::Int128, threshold_ticks::Rational)
 end
 
 function _movement_label(movement_twice::Int128, threshold_ticks::Real)
-    return setprecision(BigFloat, 256) do
+    working_precision =
+        threshold_ticks isa BigFloat ? max(256, precision(threshold_ticks)) : 256
+    return setprecision(BigFloat, working_precision) do
         threshold_twice = 2 * BigFloat(threshold_ticks)
         movement_twice_big = BigFloat(movement_twice)
         movement_twice_big > threshold_twice ? Up :

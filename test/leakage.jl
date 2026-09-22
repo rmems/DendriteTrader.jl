@@ -217,6 +217,18 @@ end
     @test only(labels).label == Up
 end
 
+@testset "Labels preserve supplied BigFloat threshold precision" begin
+    anchor = BookSnapshot(:SIM, "XYZ", 100, 110, 1, [100 => 10], [102 => 10])
+    target = BookSnapshot(:SIM, "XYZ", 200, 210, 2, [101 => 10], [103 => 10])
+    threshold = setprecision(BigFloat, 512) do
+        BigFloat(1) - BigFloat(2)^(-300)
+    end
+
+    labels = label_event_horizon([anchor, target]; horizon_events = 1, threshold_ticks = threshold)
+
+    @test only(labels).label == Up
+end
+
 @testset "Labels avoid overflow for fixed-width rational thresholds" begin
     anchor = BookSnapshot(:SIM, "XYZ", 100, 110, 1, [100 => 10], [102 => 10])
     target = BookSnapshot(:SIM, "XYZ", 200, 210, 2, [101 => 10], [103 => 10])
