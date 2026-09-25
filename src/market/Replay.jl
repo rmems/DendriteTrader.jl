@@ -80,9 +80,19 @@ function _trade_side(value::AbstractString)
     throw(ArgumentError("aggressor_side must be BUY or SELL"))
 end
 
+const _KNOWN_VENUE_SYMBOLS = Dict{String, Symbol}(
+    "SIM" => :SIM,
+)
+
+function _decode_venue(venue_string::AbstractString)
+    sym = get(_KNOWN_VENUE_SYMBOLS, venue_string, nothing)
+    sym === nothing && throw(ArgumentError("unknown venue: $venue_string"))
+    return sym
+end
+
 function _decode_event(record::AbstractDict)
     event_type = _required_string(record, "type")
-    venue = Symbol(_required_string(record, "venue"))
+    venue = _decode_venue(_required_string(record, "venue"))
     instrument = _required_string(record, "instrument")
     exchange_ts_ns = _required_integer(record, "exchange_ts_ns")
     receive_ts_ns = _required_integer(record, "receive_ts_ns")

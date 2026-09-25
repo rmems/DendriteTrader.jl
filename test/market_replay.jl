@@ -64,6 +64,19 @@ end
         close(io)
         @test_throws ArgumentError load_session_jsonl(path)
     end
+
+    mktemp() do path, io
+        unknown_venue = "BAD$(string(rand(UInt128)))"
+        write(
+            io,
+            "{\"type\":\"book_delta\",\"venue\":\"$unknown_venue\",\"instrument\":\"XYZ\",\"exchange_ts_ns\":1000,\"receive_ts_ns\":1010,\"sequence\":1,\"side\":\"BID\",\"price_ticks\":100,\"size_delta\":10}\n",
+        )
+        close(io)
+        err = @test_throws ArgumentError load_session_jsonl(path)
+        message = sprint(showerror, err.value)
+        @test occursin("unknown venue", message)
+        @test occursin(unknown_venue, message)
+    end
 end
 
 @testset "Deterministic L2 replay" begin
