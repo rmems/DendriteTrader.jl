@@ -49,6 +49,21 @@ end
     @test_throws ArgumentError microstructure_features(mixed_session)
 end
 
+@testset "Labels cache validated levels across overlapping horizons" begin
+    snapshots = [
+        BookSnapshot(:SIM, "XYZ", 100, 110, 1, [100 => 10], [102 => 10]),
+        BookSnapshot(:SIM, "XYZ", 200, 210, 2, [101 => 10], [103 => 10]),
+        BookSnapshot(:SIM, "XYZ", 300, 310, 3, [102 => 10], [104 => 10]),
+        BookSnapshot(:SIM, "XYZ", 400, 410, 4, [101 => 10], [103 => 10]),
+    ]
+
+    labels = label_event_horizon(snapshots; horizon_events = 1)
+
+    @test [target.label for target in labels] == [Up, Up, Down]
+    @test [(target.anchor_sequence, target.target_sequence) for target in labels] ==
+          [(1, 2), (2, 3), (3, 4)]
+end
+
 @testset "Labels retain exact event offsets" begin
     complete_one = BookSnapshot(:SIM, "XYZ", 100, 110, 1, [100 => 10], [102 => 10])
     incomplete = BookSnapshot(:SIM, "XYZ", 200, 210, 2, [101 => 10], Pair{Int64, Int64}[])
@@ -252,9 +267,12 @@ end
     training = FeatureFrame([feature_row(1, 1.0), feature_row(2, nextfloat(1.0))])
 
     normalizer = fit!(RollingZScore(), training)
+    transformed = transform!(normalizer, FeatureFrame(collect(training.rows)))
 
     @test normalizer.means == ntuple(_ -> 1.0, 5)
     @test normalizer.scales == ntuple(_ -> eps(Float64) / 2, 5)
+    @test transformed[1].spread_ticks == -1.0
+    @test transformed[2].spread_ticks == 1.0
 end
 
 @testset "Normalization fitting is independent of ambient BigFloat precision" begin

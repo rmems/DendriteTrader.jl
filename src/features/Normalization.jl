@@ -6,6 +6,17 @@ mutable struct RollingZScore
     scales::NTuple{5, Float64}
     fitted::Bool
     fitted_through_sequence::Int64
+    means_exact::NTuple{5, BigFloat}
+
+    function RollingZScore(
+        means::NTuple{5, Float64},
+        scales::NTuple{5, Float64},
+        fitted::Bool,
+        fitted_through_sequence::Integer,
+        means_exact::NTuple{5, BigFloat} = ntuple(_ -> BigFloat(0), 5),
+    )
+        return new(means, scales, fitted, Int64(fitted_through_sequence), means_exact)
+    end
 end
 
 RollingZScore() = RollingZScore(ntuple(_ -> 0.0, 5), ntuple(_ -> 1.0, 5), false, 0)
@@ -47,38 +58,38 @@ function fit!(normalizer::RollingZScore, training::FeatureFrame)
         end
         normalizer.means = means
         normalizer.scales = scales
+        normalizer.means_exact = means_big
         normalizer.fitted = true
         normalizer.fitted_through_sequence = last(training).sequence
         return normalizer
     end
 end
 
-function _normalized_value(value::Float64, mean::Float64, scale::Float64)
-    difference = value - mean
-    isfinite(difference) && return difference / scale
-    magnitude = max(abs(value), abs(mean), abs(scale))
-    return (value / magnitude - mean / magnitude) / (scale / magnitude)
+function _normalized_value(value::Float64, mean_exact::BigFloat, scale::Float64)
+    return Float64((BigFloat(value) - mean_exact) / BigFloat(scale))
 end
 
 """Transform a frame in place without updating the training-fitted parameters."""
 function transform!(normalizer::RollingZScore, frame::FeatureFrame)
     normalizer.fitted || throw(ArgumentError("normalizer must be fitted before transform"))
-    transformed = FeatureRow[]
-    sizehint!(transformed, length(frame))
-    for row in frame
-        values = _feature_values(row)
-        normalized = ntuple(
-            feature -> _normalized_value(
-                values[feature],
-                normalizer.means[feature],
-                normalizer.scales[feature],
-            ),
-            5,
-        )
-        push!(transformed, FeatureRow(row.exchange_ts_ns, row.sequence, normalized...))
+    return setprecision(BigFloat, 256) do
+        transformed = FeatureRow[]
+        sizehint!(transformed, length(frame))
+        for row in frame
+            values = _feature_values(row)
+            normalized = ntuple(
+                feature -> _normalized_value(
+                    values[feature],
+                    normalizer.means_exact[feature],
+                    normalizer.scales[feature],
+                ),
+                5,
+            )
+            push!(transformed, FeatureRow(row.exchange_ts_ns, row.sequence, normalized...))
+        end
+        setfield!(frame, :rows, tuple(transformed...))
+        return frame
     end
-    setfield!(frame, :rows, tuple(transformed...))
-    return frame
 end
 
 """Return JSON-serializable normalization evidence."""

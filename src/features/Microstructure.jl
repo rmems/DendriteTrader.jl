@@ -103,7 +103,10 @@ end
 
 _exact_ratio_to_float64(numerator::Int128, denominator::Int128) = Float64(numerator // denominator)
 
-function _validate_snapshot_session(snapshots::AbstractVector{BookSnapshot})
+function _validate_snapshot_session(
+    snapshots::AbstractVector{BookSnapshot};
+    allow_sequence_gaps::Bool = false,
+)
     isempty(snapshots) && return nothing
     venue = first(snapshots).venue
     instrument = first(snapshots).instrument
@@ -122,8 +125,13 @@ function _validate_snapshot_session(snapshots::AbstractVector{BookSnapshot})
             throw(ArgumentError("snapshot receive timestamps must be positive"))
         snapshot.receive_ts_ns >= snapshot.exchange_ts_ns ||
             throw(ArgumentError("snapshot receive timestamps must not precede exchange timestamps"))
-        snapshot.sequence > previous_sequence ||
-            throw(ArgumentError("snapshot sequences must strictly increase"))
+        if allow_sequence_gaps || previous_sequence == 0
+            snapshot.sequence > previous_sequence ||
+                throw(ArgumentError("snapshot sequences must strictly increase"))
+        else
+            snapshot.sequence == previous_sequence + 1 ||
+                throw(ArgumentError("snapshot sequences must be contiguous"))
+        end
         snapshot.exchange_ts_ns >= previous_exchange_timestamp ||
             throw(ArgumentError("snapshot exchange timestamps must not decrease"))
         snapshot.receive_ts_ns >= previous_receive_timestamp ||
@@ -179,13 +187,7 @@ function microstructure_features(
     snapshots::AbstractVector{BookSnapshot};
     allow_sequence_gaps::Bool = false,
 )
-    _validate_snapshot_session(snapshots)
-    if !allow_sequence_gaps
-        for index in 2:length(snapshots)
-            snapshots[index].sequence == snapshots[index - 1].sequence + 1 ||
-                throw(ArgumentError("signed order flow requires contiguous sequences"))
-        end
-    end
+    _validate_snapshot_session(snapshots; allow_sequence_gaps)
     rows = FeatureRow[]
     previous_complete_levels = nothing
 

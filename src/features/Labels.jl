@@ -50,26 +50,21 @@ function label_event_horizon(
     threshold_ticks::Real = 0,
     allow_sequence_gaps::Bool = false,
 )
-    _validate_snapshot_session(snapshots)
+    _validate_snapshot_session(snapshots; allow_sequence_gaps)
     horizon_events > 0 || throw(ArgumentError("horizon_events must be positive"))
     isfinite(threshold_ticks) && threshold_ticks >= 0 ||
         throw(ArgumentError("threshold_ticks must be finite and non-negative"))
     horizon_events < length(snapshots) ||
         throw(ArgumentError("horizon_events must be shorter than the session"))
-    if !allow_sequence_gaps
-        for index in 2:length(snapshots)
-            snapshots[index].sequence == snapshots[index - 1].sequence + 1 ||
-                throw(ArgumentError("exact event horizons require contiguous sequences"))
-        end
-    end
 
+    validated_levels = [_validated_top_of_book(snapshot) for snapshot in snapshots]
     labels = MovementTarget[]
     sizehint!(labels, length(snapshots) - horizon_events)
     for index in 1:(length(snapshots) - horizon_events)
         anchor = snapshots[index]
         target = snapshots[index + horizon_events]
-        anchor_levels = _validated_top_of_book(anchor)
-        target_levels = _validated_top_of_book(target)
+        anchor_levels = validated_levels[index]
+        target_levels = validated_levels[index + horizon_events]
         (isnothing(anchor_levels) || isnothing(target_levels)) && continue
         anchor_bid, anchor_ask = anchor_levels
         target_bid, target_ask = target_levels

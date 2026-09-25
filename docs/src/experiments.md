@@ -100,7 +100,10 @@ advance event time and sequence but do not invent unobserved changes to L2 depth
 row contains the integer spread, mid-price, size-weighted microprice, top-level
 imbalance, and signed top-of-book order flow. The calculation reads the current and
 immediately preceding complete snapshots only; it rejects mixed venues, mixed
-instruments, and non-monotonic event streams.
+instruments, and non-monotonic event streams. Sequence gaps are rejected by
+default because signed order flow requires adjacent exchange events. Set
+`allow_sequence_gaps=true` only when the input is intentionally an observed-event
+stream.
 
 `RollingZScore` is fit explicitly on a supplied training `FeatureFrame` and records
 the final training sequence. `transform!` never updates those fitted parameters, so
