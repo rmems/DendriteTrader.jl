@@ -115,6 +115,18 @@ export MarketEvent, BookDelta, TradePrint, BookSnapshot
 export OrderBookState, ReplayPolicy, ReplaySession
 export apply!, snapshot, best_bid, best_ask, spread_ticks, replay!, load_session_jsonl
 
+include("features/Features.jl")
+using .Features
+
+export FeatureRow, FeatureFrame, microstructure_features
+export RollingZScore, fit!, transform!, normalization_parameters
+export MovementLabel, MovementTarget, Down, Flat, Up, label_event_horizon
+
+include("experiments/Experiments.jl")
+using .Experiments
+
+export ChronologicalSplit, walk_forward_splits
+
 """
     TradeSignal
 
