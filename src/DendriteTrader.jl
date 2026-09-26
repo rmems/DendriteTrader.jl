@@ -130,7 +130,7 @@ struct TradeSignal
 end
 
 """
-    validate_signal(d::Dict) -> Union{Nothing, String}
+    validate_signal(d::AbstractDict) -> Union{Nothing, String}
 
 Validate a trade signal dictionary. Returns `nothing` if valid, or an error message string.
 
@@ -141,7 +141,7 @@ Validate a trade signal dictionary. Returns `nothing` if valid, or an error mess
 - `confidence`: Number in [0.0, 1.0]
 - `timestamp_ns`: Integer > 0
 """
-function validate_signal(d::Dict)
+function validate_signal(d::AbstractDict)
     # Check required fields
     for field in ("ticker", "side", "price", "confidence", "timestamp_ns")
         if !haskey(d, field)
@@ -197,7 +197,7 @@ function validate_signal(d::Dict)
     return nothing
 end
 
-function TradeSignal(d::Dict)
+function TradeSignal(d::AbstractDict)
     side = if get(d, "side", "NEUTRAL") == "BUY"
         Buy
     elseif get(d, "side", "NEUTRAL") == "SELL"
@@ -339,11 +339,11 @@ function SignalEvent(
 end
 
 """
-    SignalEvent(d::Dict)
+    SignalEvent(d::AbstractDict)
 
 Deserialize a SignalEvent from a dictionary (typically parsed from a JSON line).
 """
-function SignalEvent(d::Dict)
+function SignalEvent(d::AbstractDict)
     executed = get(d, "executed", false)
     if executed isa AbstractString
         executed = parse(Bool, executed)

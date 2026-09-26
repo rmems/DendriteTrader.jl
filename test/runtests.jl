@@ -134,6 +134,21 @@ using DendriteTrader
         neg_ts = copy(valid)
         neg_ts["timestamp_ns"] = -1
         @test occursin("timestamp", validate_signal(neg_ts))
+
+        # JSON 1.x parse may return JSON.Object (AbstractDict), not Dict
+        parsed = JSON.parse(
+            "{\"ticker\":\"MARKET-A\",\"side\":\"BUY\",\"price\":100.0,\"quantity\":1.0,\"confidence\":0.9,\"timestamp_ns\":1000}",
+        )
+        @test validate_signal(parsed) === nothing
+        parsed_signal = TradeSignal(parsed)
+        @test parsed_signal.ticker == "MARKET-A"
+        parsed_event = SignalEvent(
+            JSON.parse(
+                "{\"event_type\":\"executed\",\"ticker\":\"T\",\"confidence\":0.5,\"side\":\"BUY\"}",
+            ),
+        )
+        @test parsed_event.event_type == "executed"
+        @test parsed_event.ticker == "T"
     end
 
     @testset "ExecutionEngine — confidence gate" begin
