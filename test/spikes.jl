@@ -17,4 +17,15 @@
     @test_throws ArgumentError DeltaEncoder(scale = 0)
     @test_throws ArgumentError DeltaEncoder(threshold = -1)
     @test_throws ArgumentError DeltaEncoder(saturation = 128)
+    @test encode!(
+        DeltaEncoder(saturation = 2),
+        FeatureFrame([
+            FeatureRow(10, 1, 0, 0, 0, 0, 0),
+            FeatureRow(20, 2, floatmax(Float64), 0, 0, 0, 0),
+        ]),
+    ).spikes[
+        2,
+        1,
+    ] == 2
+    @test_throws ArgumentError encode!(encoder, FeatureFrame([FeatureRow(40, 2, 1, 1, 1, 1, 1)]))
 end
