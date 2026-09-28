@@ -5,6 +5,9 @@ using JSON
 using ZMQ
 using DendriteTrader
 
+include("models.jl")
+include("spikes.jl")
+
 @testset "DendriteTrader" begin
     @testset "TradeSignal" begin
         d = Dict(

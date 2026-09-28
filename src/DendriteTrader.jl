@@ -127,6 +127,20 @@ using .Experiments
 
 export ChronologicalSplit, walk_forward_splits
 
+"""Reset transient state in an encoder or forecast model without discarding fitted parameters."""
+function reset_state! end
+
+include("models/Models.jl")
+using .Models
+
+export ForecastHorizon, Forecast, AbstractForecastModel, predict!, reset_state!
+export StationaryModel, ImbalanceRule, RidgeClassifier
+
+include("spikes/Spikes.jl")
+using .Spikes
+
+export AbstractSpikeEncoder, SpikeFrame, DeltaEncoder, encode!, spike_density
+
 """
     TradeSignal
 
