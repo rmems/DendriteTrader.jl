@@ -108,13 +108,13 @@
 - Produces: `ForecastHorizon`, `Forecast`, `AbstractForecastModel`, `fit!`, `predict!`, `reset_state!`, `AbstractSpikeEncoder`, `SpikeFrame`, and `encode!`.
 - Produces baselines: `StationaryModel`, `ImbalanceRule`, and `RidgeClassifier`.
 
-- [ ] **Step 1: Write tests for forecast probability validation and deterministic model reset.**
-- [ ] **Step 2: Implement the forecast/model protocol.**
-- [ ] **Step 3: Write literal-fixture tests for stationary, imbalance, and ridge baselines.**
-- [ ] **Step 4: Implement the baselines with an injected RNG where stochastic behavior exists.**
-- [ ] **Step 5: Write delta-encoder tests for positive, negative, silent, and saturated channels.**
-- [ ] **Step 6: Implement delta encoding and spike-density diagnostics.**
-- [ ] **Step 7: Run the full suite and commit the model boundary.**
+- [x] **Step 1: Write tests for forecast probability validation and deterministic model reset.**
+- [x] **Step 2: Implement the forecast/model protocol.**
+- [x] **Step 3: Write literal-fixture tests for stationary, imbalance, and ridge baselines.**
+- [x] **Step 4: Implement the deterministic baselines (no stochastic behavior is used).**
+- [x] **Step 5: Write delta-encoder tests for positive, negative, silent, and saturated channels.**
+- [x] **Step 6: Implement delta encoding and spike-density diagnostics.**
+- [x] **Step 7: Run the full suite and commit the model boundary.**
 
 ### Task 5: Event-driven paper simulator
 

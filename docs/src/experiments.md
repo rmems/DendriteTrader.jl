@@ -119,6 +119,23 @@ supplied session boundary. `walk_forward_splits` constructs expanding training
 windows with disjoint validation/test windows and explicit embargo gaps; it rejects
 an embargo shorter than the declared maximum feature or label horizon.
 
+## Tiny CPU baseline
+
+This no-network, no-GPU example fits a stationary baseline on chronological training
+data, then returns a normalized three-class forecast:
+
+```julia
+using DendriteTrader
+
+rows = FeatureFrame([FeatureRow(10, 1, 1, 100, 100, -0.2, 0),
+                     FeatureRow(20, 2, 1, 101, 101, 0.3, 1)])
+model = fit!(StationaryModel(), rows, [MovementTarget(1, 2, 1, Up)])
+forecast = only(predict!(model, FeatureFrame([rows[1]]), ForecastHorizon(1)))
+```
+
+`Forecast.probabilities` use `(Down, Flat, Up)` order. They are class probabilities,
+not calibrated win probabilities, and must not be passed directly to Kelly sizing.
+
 ## API reference
 
 ```@docs
@@ -146,4 +163,14 @@ label_event_horizon
 MovementTarget
 ChronologicalSplit
 walk_forward_splits
+ForecastHorizon
+Forecast
+StationaryModel
+ImbalanceRule
+RidgeClassifier
+DeltaEncoder
+SpikeFrame
+encode!
+spike_density
+reset_state!
 ```
