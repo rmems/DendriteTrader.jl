@@ -40,9 +40,9 @@ Only the constructor keys below are accepted; omitted keys retain their defaults
 
 | Key | Type | Default |
 |-----|------|---------|
-| `confidence_threshold` | number | `0.85` |
-| `max_position_size` | number | `10.0` |
-| `payoff_ratio` | number | `1.5` |
+| `confidence_threshold` | finite number in `[0, 1]` | `0.85` |
+| `max_position_size` | positive finite number | `10.0` |
+| `payoff_ratio` | positive finite number | `1.5` |
 | `log_file` | string or YAML `null` | no event log |
 | `truncate` | boolean | `false` |
 
@@ -69,7 +69,9 @@ engine = load_config("engine.toml")
 ```
 
 Unknown keys, non-mapping documents, and values with the wrong type throw an
-`ArgumentError`; malformed TOML or YAML propagates its parser error.
+`ArgumentError`; malformed TOML or YAML propagates its parser error. Relative
+`log_file` paths are resolved from the directory containing the configuration
+file.
 
 ## dYdX v4 REST Client
 

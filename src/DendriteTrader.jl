@@ -434,7 +434,20 @@ function _config_number(config::AbstractDict, key::String, target::Type)
     value isa Real && !(value isa Bool) || throw(ArgumentError(
         "configuration key `$key` must be a number, got $(repr(value))",
     ))
-    return target(value)
+    converted = try
+        target(value)
+    catch err
+        if err isa ArgumentError || err isa InexactError || err isa OverflowError
+            throw(ArgumentError(
+                "configuration key `$key` must be convertible to $target, got $(repr(value))",
+            ))
+        end
+        rethrow()
+    end
+    isfinite(converted) || throw(ArgumentError(
+        "configuration key `$key` must be finite, got $(repr(value))",
+    ))
+    return converted
 end
 
 """
@@ -445,6 +458,9 @@ Create an [`ExecutionEngine`](@ref) from a flat TOML (`.toml`) or YAML
 `max_position_size`, `payoff_ratio`, `log_file`, and `truncate`; omitted keys
 use the constructor defaults. Numeric configuration values are converted to the
 engine's concrete numeric types, and YAML `null` is accepted for `log_file`.
+All numeric values must be finite. `confidence_threshold` must be in `[0, 1]`,
+and `max_position_size` and `payoff_ratio` must be positive. Relative
+`log_file` paths are resolved relative to the configuration file.
 
 An unsupported extension, a non-mapping YAML document, an unknown key, or a
 value of the wrong type raises `ArgumentError`. Syntax errors from the selected
@@ -468,20 +484,39 @@ function load_config(path::AbstractString)
 
     kwargs = Pair{Symbol, Any}[]
     if haskey(config, "confidence_threshold")
-        push!(kwargs, :confidence_threshold => _config_number(config, "confidence_threshold", Float32))
+        confidence_threshold = _config_number(config, "confidence_threshold", Float32)
+        0.0f0 <= confidence_threshold <= 1.0f0 || throw(ArgumentError(
+            "configuration key `confidence_threshold` must be between 0 and 1",
+        ))
+        push!(kwargs, :confidence_threshold => confidence_threshold)
     end
     if haskey(config, "max_position_size")
-        push!(kwargs, :max_position_size => _config_number(config, "max_position_size", Float64))
+        max_position_size = _config_number(config, "max_position_size", Float64)
+        max_position_size > 0.0 || throw(ArgumentError(
+            "configuration key `max_position_size` must be positive",
+        ))
+        push!(kwargs, :max_position_size => max_position_size)
     end
     if haskey(config, "payoff_ratio")
-        push!(kwargs, :payoff_ratio => _config_number(config, "payoff_ratio", Float64))
+        payoff_ratio = _config_number(config, "payoff_ratio", Float64)
+        payoff_ratio > 0.0 || throw(ArgumentError(
+            "configuration key `payoff_ratio` must be positive",
+        ))
+        push!(kwargs, :payoff_ratio => payoff_ratio)
     end
     if haskey(config, "log_file")
         log_file = config["log_file"]
         (log_file isa AbstractString || isnothing(log_file)) || throw(ArgumentError(
             "configuration key `log_file` must be a string or null, got $(repr(log_file))",
         ))
-        push!(kwargs, :log_file => (isnothing(log_file) ? nothing : String(log_file)))
+        resolved_log_file = if isnothing(log_file)
+            nothing
+        elseif isabspath(log_file)
+            String(log_file)
+        else
+            normpath(joinpath(dirname(abspath(path)), log_file))
+        end
+        push!(kwargs, :log_file => resolved_log_file)
     end
     if haskey(config, "truncate")
         truncate = config["truncate"]

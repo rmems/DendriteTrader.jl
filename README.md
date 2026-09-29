@@ -119,9 +119,10 @@ truncate: true
 engine = load_config("engine.toml")
 ```
 
-The complete schema is `confidence_threshold` (number), `max_position_size`
-(number), `payoff_ratio` (number), `log_file` (string, or YAML `null`), and
-`truncate` (boolean).
+The complete schema is `confidence_threshold` (finite number from `0` to `1`),
+`max_position_size` (positive finite number), `payoff_ratio` (positive finite
+number), `log_file` (string, or YAML `null`), and `truncate` (boolean). A
+relative `log_file` path is resolved from the directory containing the config.
 
 ### 2. Process a signal manually
 

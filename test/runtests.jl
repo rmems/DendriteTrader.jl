@@ -1283,6 +1283,23 @@ end
         write(bad_type_path, "truncate: definitely\n")
         @test_throws ArgumentError load_config(bad_type_path)
 
+        for (name, contents) in (
+            ("nan.toml", "confidence_threshold = nan\n"),
+            ("infinite.toml", "max_position_size = inf\n"),
+            ("overflow.toml", "confidence_threshold = 1e100\n"),
+            ("invalid-domain.toml", "payoff_ratio = 0\n"),
+        )
+            path = joinpath(dir, name)
+            write(path, contents)
+            @test_throws ArgumentError load_config(path)
+        end
+
+        relative_path = joinpath(dir, "relative.toml")
+        write(relative_path, "log_file = \"logs/events.jsonl\"\n")
+        relative_engine = load_config(relative_path)
+        @test relative_engine.log_file == joinpath(dir, "logs", "events.jsonl")
+        close_log!(relative_engine)
+
         malformed_path = joinpath(dir, "malformed.toml")
         write(malformed_path, "confidence_threshold = [\n")
         @test_throws Exception load_config(malformed_path)
