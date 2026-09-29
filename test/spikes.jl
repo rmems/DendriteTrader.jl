@@ -34,4 +34,6 @@
         FeatureFrame([FeatureRow(10, 1, 0, 0, 0, 0, 0), FeatureRow(20, 2, 5, -5, 0, 0, 0)]),
     )
     @test subthreshold.spikes[2, :] == zeros(Int8, 5)
+    @test_throws ArgumentError SpikeFrame([typemax(UInt64)], [1], zeros(Int8, 1, 5))
+    @test_throws ArgumentError SpikeFrame([1], [typemax(UInt64)], zeros(Int8, 1, 5))
 end

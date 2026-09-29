@@ -15,9 +15,10 @@ struct SpikeFrame
         length(exchange_ts_ns) == length(sequence) == size(spikes, 1) ||
             throw(ArgumentError("spike timestamps, sequences, and rows must agree"))
         size(spikes, 2) > 0 || throw(ArgumentError("spike frame must have at least one channel"))
+        all(value -> 0 < value <= typemax(Int64), exchange_ts_ns) &&
+        all(value -> 0 < value <= typemax(Int64), sequence) ||
+            throw(ArgumentError("spike timestamps and sequences must be positive and fit in Int64"))
         ts, seq = Int64.(exchange_ts_ns), Int64.(sequence)
-        all(>(0), ts) && all(>(0), seq) ||
-            throw(ArgumentError("spike timestamps and sequences must be positive"))
         all(diff(seq) .> 0) || throw(ArgumentError("spike sequences must strictly increase"))
         all(diff(ts) .>= 0) || throw(ArgumentError("spike timestamps must not decrease"))
         all(value -> typemin(Int8) <= value <= typemax(Int8), spikes) ||
