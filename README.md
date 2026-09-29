@@ -91,6 +91,38 @@ engine = ExecutionEngine(
 )
 ```
 
+### Load an execution configuration file
+
+`load_config` accepts a flat TOML (`.toml`) or YAML (`.yaml`/`.yml`) file and
+returns an `ExecutionEngine`. Missing keys retain their constructor defaults;
+unknown keys and values of the wrong type raise `ArgumentError`.
+
+```toml
+# engine.toml
+confidence_threshold = 0.90
+max_position_size = 25.0
+payoff_ratio = 1.75
+log_file = "events.jsonl"
+truncate = true
+```
+
+```yaml
+# engine.yaml
+confidence_threshold: 0.90
+max_position_size: 25.0
+payoff_ratio: 1.75
+log_file: events.jsonl
+truncate: true
+```
+
+```julia
+engine = load_config("engine.toml")
+```
+
+The complete schema is `confidence_threshold` (number), `max_position_size`
+(number), `payoff_ratio` (number), `log_file` (string, or YAML `null`), and
+`truncate` (boolean).
+
 ### 2. Process a signal manually
 
 ```julia

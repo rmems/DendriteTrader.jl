@@ -68,6 +68,8 @@ module DendriteTrader
 
 using JSON
 using HTTP
+using TOML
+using YAML
 using ZMQ
 
 export TradeSignal,
@@ -78,6 +80,7 @@ export TradeSignal,
     ExecutionEngine,
     ExecutionDecision,
     SignalEvent,
+    load_config,
     load_history,
     close_log!
 export validate_signal, execute_signal!, latency_ns, passes_gate
@@ -417,6 +420,79 @@ function _event_to_dict(event::SignalEvent)
 end
 
 # ── Execution Engine ──────────────────────────────────────────────────────────
+
+const _EXECUTION_CONFIG_KEYS = Set((
+    "confidence_threshold",
+    "max_position_size",
+    "payoff_ratio",
+    "log_file",
+    "truncate",
+))
+
+function _config_number(config::AbstractDict, key::String, target::Type)
+    value = config[key]
+    value isa Real && !(value isa Bool) || throw(ArgumentError(
+        "configuration key `$key` must be a number, got $(repr(value))",
+    ))
+    return target(value)
+end
+
+"""
+    load_config(path) -> ExecutionEngine
+
+Create an [`ExecutionEngine`](@ref) from a flat TOML (`.toml`) or YAML
+(`.yaml`/`.yml`) file. The supported keys are `confidence_threshold`,
+`max_position_size`, `payoff_ratio`, `log_file`, and `truncate`; omitted keys
+use the constructor defaults. Numeric configuration values are converted to the
+engine's concrete numeric types, and YAML `null` is accepted for `log_file`.
+
+An unsupported extension, a non-mapping YAML document, an unknown key, or a
+value of the wrong type raises `ArgumentError`. Syntax errors from the selected
+parser are propagated.
+"""
+function load_config(path::AbstractString)
+    extension = lowercase(splitext(path)[2])
+    config = if extension == ".toml"
+        TOML.parsefile(path)
+    elseif extension == ".yaml" || extension == ".yml"
+        YAML.load_file(path)
+    else
+        throw(ArgumentError("unsupported configuration format `$extension`; use .toml, .yaml, or .yml"))
+    end
+
+    config isa AbstractDict || throw(ArgumentError("configuration root must be a mapping"))
+    for key in keys(config)
+        key isa AbstractString || throw(ArgumentError("configuration keys must be strings, got $(repr(key))"))
+        key in _EXECUTION_CONFIG_KEYS || throw(ArgumentError("unknown configuration key `$key`"))
+    end
+
+    kwargs = Pair{Symbol, Any}[]
+    if haskey(config, "confidence_threshold")
+        push!(kwargs, :confidence_threshold => _config_number(config, "confidence_threshold", Float32))
+    end
+    if haskey(config, "max_position_size")
+        push!(kwargs, :max_position_size => _config_number(config, "max_position_size", Float64))
+    end
+    if haskey(config, "payoff_ratio")
+        push!(kwargs, :payoff_ratio => _config_number(config, "payoff_ratio", Float64))
+    end
+    if haskey(config, "log_file")
+        log_file = config["log_file"]
+        (log_file isa AbstractString || isnothing(log_file)) || throw(ArgumentError(
+            "configuration key `log_file` must be a string or null, got $(repr(log_file))",
+        ))
+        push!(kwargs, :log_file => (isnothing(log_file) ? nothing : String(log_file)))
+    end
+    if haskey(config, "truncate")
+        truncate = config["truncate"]
+        truncate isa Bool || throw(ArgumentError(
+            "configuration key `truncate` must be a Bool, got $(repr(truncate))",
+        ))
+        push!(kwargs, :truncate => truncate)
+    end
+
+    return ExecutionEngine(; kwargs...)
+end
 
 """
     ExecutionEngine
