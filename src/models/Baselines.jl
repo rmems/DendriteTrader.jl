@@ -55,6 +55,14 @@ function _softmax(scores::AbstractVector{<:Real})
     return weights ./ sum(weights)
 end
 
+# Prediction-time standardized features saturate so finite inputs cannot overflow to Inf
+# when a fitted scale is near-denormal and the observed feature is far outside the
+# training range. The bound stays far below floatmax so downstream scores remain finite.
+const _MAX_STANDARDIZED = 1e6
+
+_standardized_features(row::FeatureRow, scales::NTuple{5, Float64}) =
+    clamp.(_feature_vector(row) ./ scales, -_MAX_STANDARDIZED, _MAX_STANDARDIZED)
+
 """Training-frequency baseline with no feature-dependent state."""
 mutable struct StationaryModel <: AbstractForecastModel
     probabilities::NTuple{3, Float64}
@@ -153,7 +161,7 @@ function predict!(model::RidgeClassifier, frame::FeatureFrame, horizon::Forecast
         Forecast(
             horizon,
             row,
-            _softmax(vec(vcat(1.0, _feature_vector(row) ./ model.scales)' * model.weights)),
+            _softmax(vec(vcat(1.0, _standardized_features(row, model.scales))' * model.weights)),
         ) for row in frame
     ]
 end

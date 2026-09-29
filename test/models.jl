@@ -64,4 +64,13 @@
         forecast -> all(isfinite, forecast.probabilities),
         predict!(fit!(RidgeClassifier(), extreme, targets), extreme, horizon),
     )
+
+    denormal_scale = FeatureFrame([
+        FeatureRow(i * 10, i, nextfloat(0.0), nextfloat(0.0), nextfloat(0.0), 0, 0) for i in 1:3
+    ])
+    denormal_fit = fit!(RidgeClassifier(), denormal_scale, targets)
+    @test all(
+        forecast -> all(isfinite, forecast.probabilities),
+        predict!(denormal_fit, extreme, horizon),
+    )
 end
