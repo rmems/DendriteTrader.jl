@@ -9,6 +9,20 @@
     @test_throws ArgumentError Forecast(horizon, 1, 1, (Up, Flat, Down), (0.0, 0.0, 1.0))
     @test_throws ArgumentError Forecast(horizon, 1, 1, (Down, Flat, Up), (0.2, 0.2, 0.2))
     @test_throws ArgumentError Forecast(horizon, 1, 1, (Down, Flat, Up), (NaN, 0.0, 1.0))
+    @test_throws ArgumentError Forecast(
+        horizon,
+        typemax(UInt64),
+        1,
+        (Down, Flat, Up),
+        (1.0, 0.0, 0.0),
+    )
+    @test_throws ArgumentError Forecast(
+        horizon,
+        1,
+        typemax(UInt64),
+        (Down, Flat, Up),
+        (1.0, 0.0, 0.0),
+    )
 
     for model in (StationaryModel(), ImbalanceRule(), RidgeClassifier())
         @test_throws ArgumentError predict!(model, rows, horizon)

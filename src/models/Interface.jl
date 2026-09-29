@@ -32,7 +32,10 @@ struct Forecast
         probabilities,
     )
         exchange_ts_ns > 0 || throw(ArgumentError("forecast timestamp must be positive"))
+        exchange_ts_ns <= typemax(Int64) ||
+            throw(ArgumentError("forecast timestamp must fit in Int64"))
         sequence > 0 || throw(ArgumentError("forecast sequence must be positive"))
+        sequence <= typemax(Int64) || throw(ArgumentError("forecast sequence must fit in Int64"))
         classes == FORECAST_CLASSES ||
             throw(ArgumentError("forecast classes must be ordered (Down, Flat, Up)"))
         length(probabilities) == 3 || throw(ArgumentError("forecast needs three probabilities"))
