@@ -1236,6 +1236,80 @@ end
     end
 end
 
+@testset "ExecutionEngine configuration files" begin
+    mktempdir() do dir
+        toml_path = joinpath(dir, "engine.toml")
+        yaml_path = joinpath(dir, "engine.yaml")
+        log_path = joinpath(dir, "events.jsonl")
+        toml = """
+        confidence_threshold = 0.9
+        max_position_size = 25
+        payoff_ratio = 1.75
+        log_file = "$log_path"
+        truncate = true
+        """
+        yaml = """
+        confidence_threshold: 0.9
+        max_position_size: 25
+        payoff_ratio: 1.75
+        log_file: $log_path
+        truncate: true
+        """
+        write(toml_path, toml)
+        write(yaml_path, yaml)
+
+        from_toml = load_config(toml_path)
+        from_yaml = load_config(yaml_path)
+        @test from_toml.confidence_threshold == from_yaml.confidence_threshold == 0.9f0
+        @test from_toml.max_position_size == from_yaml.max_position_size == 25.0
+        @test from_toml.payoff_ratio == from_yaml.payoff_ratio == 1.75
+        @test from_toml.log_file == from_yaml.log_file == log_path
+        close_log!(from_toml)
+        close_log!(from_yaml)
+
+        defaults_path = joinpath(dir, "defaults.yml")
+        write(defaults_path, "log_file: null\n")
+        defaults = load_config(defaults_path)
+        @test defaults.confidence_threshold == 0.85f0
+        @test defaults.max_position_size == 10.0
+        @test defaults.payoff_ratio == 1.5
+        @test defaults.log_file === nothing
+
+        bad_key_path = joinpath(dir, "unknown.toml")
+        write(bad_key_path, "not_an_engine_key = 1\n")
+        @test_throws ArgumentError load_config(bad_key_path)
+
+        bad_type_path = joinpath(dir, "invalid.yaml")
+        write(bad_type_path, "truncate: definitely\n")
+        @test_throws ArgumentError load_config(bad_type_path)
+
+        for (name, contents) in (
+            ("nan.toml", "confidence_threshold = nan\n"),
+            ("infinite.toml", "max_position_size = inf\n"),
+            ("overflow.toml", "confidence_threshold = 1e100\n"),
+            ("invalid-domain.toml", "payoff_ratio = 0\n"),
+        )
+            path = joinpath(dir, name)
+            write(path, contents)
+            @test_throws ArgumentError load_config(path)
+        end
+
+        relative_path = joinpath(dir, "relative.toml")
+        write(relative_path, "log_file = \"logs/events.jsonl\"\n")
+        relative_engine = load_config(relative_path)
+        @test relative_engine.log_file == joinpath(dir, "logs", "events.jsonl")
+        close_log!(relative_engine)
+
+        malformed_path = joinpath(dir, "malformed.toml")
+        write(malformed_path, "confidence_threshold = [\n")
+        @test_throws Exception load_config(malformed_path)
+
+        unsupported_path = joinpath(dir, "engine.json")
+        write(unsupported_path, "{}")
+        @test_throws ArgumentError load_config(unsupported_path)
+    end
+end
+
 @testset "load_history resilience" begin
     mktempdir() do dir
         missing_path = joinpath(dir, "missing.jsonl")

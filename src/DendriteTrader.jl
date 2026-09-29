@@ -68,6 +68,8 @@ module DendriteTrader
 
 using JSON
 using HTTP
+using TOML
+using YAML
 using ZMQ
 
 export TradeSignal,
@@ -78,6 +80,7 @@ export TradeSignal,
     ExecutionEngine,
     ExecutionDecision,
     SignalEvent,
+    load_config,
     load_history,
     close_log!
 export validate_signal, execute_signal!, latency_ns, passes_gate
@@ -417,6 +420,114 @@ function _event_to_dict(event::SignalEvent)
 end
 
 # ── Execution Engine ──────────────────────────────────────────────────────────
+
+const _EXECUTION_CONFIG_KEYS = Set((
+    "confidence_threshold",
+    "max_position_size",
+    "payoff_ratio",
+    "log_file",
+    "truncate",
+))
+
+function _config_number(config::AbstractDict, key::String, target::Type)
+    value = config[key]
+    value isa Real && !(value isa Bool) || throw(ArgumentError(
+        "configuration key `$key` must be a number, got $(repr(value))",
+    ))
+    converted = try
+        target(value)
+    catch err
+        if err isa ArgumentError || err isa InexactError || err isa OverflowError
+            throw(ArgumentError(
+                "configuration key `$key` must be convertible to $target, got $(repr(value))",
+            ))
+        end
+        rethrow()
+    end
+    isfinite(converted) || throw(ArgumentError(
+        "configuration key `$key` must be finite, got $(repr(value))",
+    ))
+    return converted
+end
+
+"""
+    load_config(path) -> ExecutionEngine
+
+Create an [`ExecutionEngine`](@ref) from a flat TOML (`.toml`) or YAML
+(`.yaml`/`.yml`) file. The supported keys are `confidence_threshold`,
+`max_position_size`, `payoff_ratio`, `log_file`, and `truncate`; omitted keys
+use the constructor defaults. Numeric configuration values are converted to the
+engine's concrete numeric types, and YAML `null` is accepted for `log_file`.
+All numeric values must be finite. `confidence_threshold` must be in `[0, 1]`,
+and `max_position_size` and `payoff_ratio` must be positive. Relative
+`log_file` paths are resolved relative to the configuration file.
+
+An unsupported extension, a non-mapping YAML document, an unknown key, or a
+value of the wrong type raises `ArgumentError`. Syntax errors from the selected
+parser are propagated.
+"""
+function load_config(path::AbstractString)
+    extension = lowercase(splitext(path)[2])
+    config = if extension == ".toml"
+        TOML.parsefile(path)
+    elseif extension == ".yaml" || extension == ".yml"
+        YAML.load_file(path)
+    else
+        throw(ArgumentError("unsupported configuration format `$extension`; use .toml, .yaml, or .yml"))
+    end
+
+    config isa AbstractDict || throw(ArgumentError("configuration root must be a mapping"))
+    for key in keys(config)
+        key isa AbstractString || throw(ArgumentError("configuration keys must be strings, got $(repr(key))"))
+        key in _EXECUTION_CONFIG_KEYS || throw(ArgumentError("unknown configuration key `$key`"))
+    end
+
+    kwargs = Pair{Symbol, Any}[]
+    if haskey(config, "confidence_threshold")
+        confidence_threshold = _config_number(config, "confidence_threshold", Float32)
+        0.0f0 <= confidence_threshold <= 1.0f0 || throw(ArgumentError(
+            "configuration key `confidence_threshold` must be between 0 and 1",
+        ))
+        push!(kwargs, :confidence_threshold => confidence_threshold)
+    end
+    if haskey(config, "max_position_size")
+        max_position_size = _config_number(config, "max_position_size", Float64)
+        max_position_size > 0.0 || throw(ArgumentError(
+            "configuration key `max_position_size` must be positive",
+        ))
+        push!(kwargs, :max_position_size => max_position_size)
+    end
+    if haskey(config, "payoff_ratio")
+        payoff_ratio = _config_number(config, "payoff_ratio", Float64)
+        payoff_ratio > 0.0 || throw(ArgumentError(
+            "configuration key `payoff_ratio` must be positive",
+        ))
+        push!(kwargs, :payoff_ratio => payoff_ratio)
+    end
+    if haskey(config, "log_file")
+        log_file = config["log_file"]
+        (log_file isa AbstractString || isnothing(log_file)) || throw(ArgumentError(
+            "configuration key `log_file` must be a string or null, got $(repr(log_file))",
+        ))
+        resolved_log_file = if isnothing(log_file)
+            nothing
+        elseif isabspath(log_file)
+            String(log_file)
+        else
+            normpath(joinpath(dirname(abspath(path)), log_file))
+        end
+        push!(kwargs, :log_file => resolved_log_file)
+    end
+    if haskey(config, "truncate")
+        truncate = config["truncate"]
+        truncate isa Bool || throw(ArgumentError(
+            "configuration key `truncate` must be a Bool, got $(repr(truncate))",
+        ))
+        push!(kwargs, :truncate => truncate)
+    end
+
+    return ExecutionEngine(; kwargs...)
+end
 
 """
     ExecutionEngine
