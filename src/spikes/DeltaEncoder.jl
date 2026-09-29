@@ -44,12 +44,12 @@ function encode!(encoder::DeltaEncoder, frame::FeatureFrame)
             for channel in eachindex(current)
                 scaled = (current[channel] - encoder.previous[channel]) * encoder.scale
                 magnitude = abs(scaled)
-                if !isfinite(magnitude) || magnitude >= encoder.saturation
-                    count = Int(encoder.saturation)
-                elseif magnitude >= encoder.threshold
-                    count = max(1, floor(Int, magnitude))
-                else
+                if magnitude < encoder.threshold
                     count = 0
+                elseif !isfinite(magnitude) || magnitude >= encoder.saturation
+                    count = Int(encoder.saturation)
+                else
+                    count = max(1, floor(Int, magnitude))
                 end
                 if count > 0
                     spikes[index, channel] = Int8(sign(scaled) * count)

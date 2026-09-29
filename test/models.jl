@@ -32,7 +32,25 @@
         [MovementTarget(1, 2, 1, Up), MovementTarget(2, 3, 2, Flat)],
     )
 
+    lookahead = fit!(
+        StationaryModel(),
+        rows,
+        [MovementTarget(1, 2, 1, Down), MovementTarget(2, 3, 1, Flat), MovementTarget(3, 5, 1, Up)],
+    )
+    @test lookahead.probabilities == (0.5, 0.5, 0.0)
+    @test lookahead.fitted_through_sequence == 3
+    @test_throws ArgumentError fit!(
+        StationaryModel(),
+        rows,
+        [MovementTarget(1, 5, 1, Up), MovementTarget(2, 6, 1, Flat)],
+    )
+
     zero_variance = FeatureFrame([FeatureRow(i * 10, i, 1, 1, 1, 0, 0) for i in 1:3])
+    tiny_ridge = fit!(RidgeClassifier(1e-20), zero_variance, targets)
+    @test all(
+        forecast -> all(isfinite, forecast.probabilities),
+        predict!(tiny_ridge, zero_variance, horizon),
+    )
     ridge = fit!(RidgeClassifier(), zero_variance, targets)
     @test all(
         forecast -> all(isfinite, forecast.probabilities),

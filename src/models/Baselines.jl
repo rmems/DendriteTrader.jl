@@ -18,7 +18,11 @@ function _training_labels(frame::FeatureFrame, targets::AbstractVector{MovementT
             throw(ArgumentError("training targets must have unique anchor sequences"))
         labels[target.anchor_sequence] = target
     end
-    matched = [(row, labels[row.sequence]) for row in frame if haskey(labels, row.sequence)]
+    boundary_sequence = last(frame).sequence
+    matched = [
+        (row, labels[row.sequence]) for row in frame if haskey(labels, row.sequence) &&
+            labels[row.sequence].target_sequence <= boundary_sequence
+    ]
     isempty(matched) && throw(ArgumentError("training targets do not align with feature sequences"))
     return matched
 end
@@ -125,7 +129,7 @@ function fit!(model::RidgeClassifier, frame::FeatureFrame, targets::AbstractVect
     n = length(matched)
     x = ones(Float64, n, 6)
     y = zeros(Float64, n, 3)
-    model.scales = ntuple(
+    scales = ntuple(
         channel -> begin
             scale = maximum(abs(_feature_vector(row)[channel]) for (row, _) in matched)
             scale == 0.0 ? 1.0 : scale
@@ -133,12 +137,14 @@ function fit!(model::RidgeClassifier, frame::FeatureFrame, targets::AbstractVect
         5,
     )
     for (index, (row, target)) in enumerate(matched)
-        x[index, 2:end] .= _feature_vector(row) ./ model.scales
+        x[index, 2:end] .= _feature_vector(row) ./ scales
         y[index, _LABEL_INDEX[target.label]] = 1.0
     end
-    penalty = Diagonal(vcat(0.0, fill(model.ridge, 5)))
-    model.weights = (x' * x + penalty) \ (x' * y)
-    all(isfinite, model.weights) || throw(ArgumentError("ridge fit produced non-finite weights"))
+    penalty_rows = hcat(zeros(Float64, 5, 1), sqrt(model.ridge) * Matrix{Float64}(I, 5, 5))
+    weights = vcat(x, penalty_rows) \ vcat(y, zeros(Float64, 5, 3))
+    all(isfinite, weights) || throw(ArgumentError("ridge fit produced non-finite weights"))
+    model.scales = scales
+    model.weights = weights
     return _set_fit_boundary!(model, matched)
 end
 function predict!(model::RidgeClassifier, frame::FeatureFrame, horizon::ForecastHorizon)

@@ -28,4 +28,10 @@
         1,
     ] == 2
     @test_throws ArgumentError encode!(encoder, FeatureFrame([FeatureRow(40, 2, 1, 1, 1, 1, 1)]))
+
+    subthreshold = encode!(
+        DeltaEncoder(threshold = 10, saturation = 4),
+        FeatureFrame([FeatureRow(10, 1, 0, 0, 0, 0, 0), FeatureRow(20, 2, 5, -5, 0, 0, 0)]),
+    )
+    @test subthreshold.spikes[2, :] == zeros(Int8, 5)
 end
