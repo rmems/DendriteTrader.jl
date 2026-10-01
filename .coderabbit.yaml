@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
-# Draft CodeRabbit config for rmems/DendriteTrader.jl (generated locally, not pushed).
+# CodeRabbit review configuration for rmems/DendriteTrader.jl.
 language: en-US
 reviews:
   profile: chill
@@ -12,7 +12,7 @@ reviews:
   - path: '{src,test}/**/*.jl'
     instructions: Julia package code. `[compat] julia = "1.10"`; CI runs Julia 1.13. Do not use Base/stdlib APIs newer than the compat floor without raising it. Review for type stability in hot paths (concrete struct field types, no abstractly typed containers, no non-`const` globals, no `Any`-returning branches), avoidable allocations in inner loops, and changes to exported API. Shared mutable state touched by several tasks/threads (token buckets, stop flags, caches) must use `ReentrantLock` or `Threads.Atomic` (REVIEW.md). Code must pass the JuliaFormatter check (`.JuliaFormatter.toml`).
   - path: test/integration/**
-    instructions: Live dYdX v4 integration tests run only when `DYDX_INTEGRATION=true`; they must never run in the default `Pkg.test()` path and must not need secrets.
+    instructions: Live dYdX v4 integration test files may be included by the default `Pkg.test()` runner, but live tests must skip unless `DYDX_INTEGRATION=true`; they must not need secrets.
   - path: '**/Project.toml'
     instructions: Julia Project.toml. New `[deps]` entries should get a `[compat]` bound; flag widened or dropped bounds and any UUID change (UUIDs are immutable once registered).
   - path: .github/workflows/**
