@@ -43,7 +43,7 @@ apt_install curl ca-certificates
 JULIA_CHANNEL="1.13"
 export PATH="$HOME/.juliaup/bin:$PATH"
 if ! command -v juliaup >/dev/null 2>&1; then
-  curl -fsSL https://install.julialang.org | sh -s -- --yes --default-channel "$JULIA_CHANNEL"
+  curl -fsSL https://install.julialang.org | sh -s -- --yes
 fi
 if ! juliaup status | awk -v ch="$JULIA_CHANNEL" '{for (i = 1; i <= NF; i++) if ($i == ch) found = 1} END {exit !found}'; then
   juliaup add "$JULIA_CHANNEL"
