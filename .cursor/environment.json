@@ -1,0 +1,4 @@
+{
+  "name": "DendriteTrader.jl",
+  "install": "bash .cursor/install.sh"
+}
