@@ -309,6 +309,62 @@ include("spikes.jl")
         @test zero_dec.reason == "zero-sized position"
     end
 
+    @testset "ExecutionEngine — portfolio exposure cap" begin
+        sig(ticker, price, side) = TradeSignal(
+            Dict(
+                "ticker" => ticker,
+                "side" => side,
+                "price" => price,
+                "quantity" => 1.0,
+                "confidence" => 0.90,
+                "timestamp_ns" => 0,
+            ),
+        )
+
+        # Units are capped at max_position_size=10; notional = 10 × price.
+        engine = ExecutionEngine(max_position_size = 10.0, max_portfolio_exposure = 1_500.0)
+        dec_a = execute_signal!(engine, sig("MARKET-A", 100.0, "BUY"), 10_000.0)
+        @test dec_a.executed
+        @test portfolio_risk(engine) ≈ 1_000.0
+
+        # Second asset: 10 × 50 = 500 → total 1_500, exactly at the cap: accepted.
+        dec_b = execute_signal!(engine, sig("MARKET-B", 50.0, "BUY"), 10_000.0)
+        @test dec_b.executed
+        @test portfolio_risk(engine) ≈ 1_500.0
+
+        # A third asset would exceed the cap: rejected, positions unchanged.
+        dec_c = execute_signal!(engine, sig("MARKET-C", 100.0, "BUY"), 10_000.0)
+        @test !dec_c.executed
+        @test occursin("portfolio exposure", dec_c.reason)
+        @test haskey(engine.positions, "MARKET-C") == false
+        @test portfolio_risk(engine) ≈ 1_500.0
+        @test engine.events[end].event_type == "portfolio_reject"
+
+        # Reducing an existing position never violates the cap.
+        dec_sell = execute_signal!(engine, sig("MARKET-A", 100.0, "SELL"), 10_000.0)
+        @test dec_sell.executed
+        @test portfolio_risk(engine) ≈ 500.0
+
+        # Unlimited by default.
+        default_engine = ExecutionEngine()
+        for i in 1:5
+            @test execute_signal!(default_engine, sig("MARKET-$i", 100.0, "BUY"), 10_000.0).executed
+        end
+        @test portfolio_risk(default_engine) ≈ 5_000.0
+
+        # Config-file support.
+        mktempdir() do dir
+            path = joinpath(dir, "engine.toml")
+            write(path, "max_portfolio_exposure = 2500\n")
+            cfg = load_config(path)
+            @test cfg.max_portfolio_exposure == 2_500.0
+
+            bad = joinpath(dir, "bad.toml")
+            write(bad, "max_portfolio_exposure = 0\n")
+            @test_throws ArgumentError load_config(bad)
+        end
+    end
+
     @testset "PriceCache" begin
         @testset "constructor with default TTL" begin
             cache = PriceCache()

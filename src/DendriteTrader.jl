@@ -87,7 +87,7 @@ export validate_signal, execute_signal!, latency_ns, passes_gate
 export DydxClient, DydxPrice, get_price, mid_price, spread_bps
 export RateLimiter, acquire!, set_rate!
 export PriceCache, invalidate!, clear!, cache_size, get_cached, put_cached!, is_fresh
-export start!, stop!, events, fill_rate
+export start!, stop!, events, fill_rate, portfolio_risk
 export kelly_fraction, from_confidence, half_kelly
 export RiskTier, Aggressive, Moderate, Conservative, Minimal, risk_tier
 export PositionSize, size_position
@@ -424,6 +424,7 @@ end
 const _EXECUTION_CONFIG_KEYS = Set((
     "confidence_threshold",
     "max_position_size",
+    "max_portfolio_exposure",
     "payoff_ratio",
     "log_file",
     "truncate",
@@ -459,7 +460,8 @@ Create an [`ExecutionEngine`](@ref) from a flat TOML (`.toml`) or YAML
 use the constructor defaults. Numeric configuration values are converted to the
 engine's concrete numeric types, and YAML `null` is accepted for `log_file`.
 All numeric values must be finite. `confidence_threshold` must be in `[0, 1]`,
-and `max_position_size` and `payoff_ratio` must be positive. Relative
+and `max_position_size`, `max_portfolio_exposure`, and `payoff_ratio` must be
+positive. Relative
 `log_file` paths are resolved relative to the configuration file.
 
 An unsupported extension, a non-mapping YAML document, an unknown key, or a
@@ -496,6 +498,13 @@ function load_config(path::AbstractString)
             "configuration key `max_position_size` must be positive",
         ))
         push!(kwargs, :max_position_size => max_position_size)
+    end
+    if haskey(config, "max_portfolio_exposure")
+        max_portfolio_exposure = _config_number(config, "max_portfolio_exposure", Float64)
+        max_portfolio_exposure > 0.0 || throw(ArgumentError(
+            "configuration key `max_portfolio_exposure` must be positive",
+        ))
+        push!(kwargs, :max_portfolio_exposure => max_portfolio_exposure)
     end
     if haskey(config, "payoff_ratio")
         payoff_ratio = _config_number(config, "payoff_ratio", Float64)
@@ -537,8 +546,14 @@ Stateful execution engine with confidence gating and position management.
 # Fields
 - `confidence_threshold`: minimum SNN confidence to execute (default 0.85)
 - `max_position_size`:    hard cap on position units (default 10.0)
+- `max_portfolio_exposure`: cap on total gross notional exposure in price
+                          units across all tickers (default `Inf`, unlimited).
+                          Positions are valued at the last execution price seen
+                          for each ticker; a signal that only reduces an
+                          existing position is never rejected by this cap.
 - `payoff_ratio`:         odds-style average win/loss ratio for Kelly sizing (default 1.5)
 - `positions`:            current open positions (ticker → quantity)
+- `last_prices`:          last execution price per ticker, for exposure valuation
 - `log_file`:             optional path to a JSON-lines event log
 - `log_io`:               open file handle for the event log (if configured)
 - `log_lock`:             lock serializing `log_io` writes
@@ -546,8 +561,10 @@ Stateful execution engine with confidence gating and position management.
 mutable struct ExecutionEngine
     confidence_threshold::Float32
     max_position_size::Float64
+    max_portfolio_exposure::Float64
     payoff_ratio::Float64
     positions::Dict{String, Float64}
+    last_prices::Dict{String, Float64}
     total_signals::Int
     executed_signals::Int
     rejected_signals::Int
@@ -610,7 +627,7 @@ function _record_event!(engine::ExecutionEngine, event::SignalEvent)
 end
 
 """
-    ExecutionEngine(; confidence_threshold=0.85f0, max_position_size=10.0, payoff_ratio=1.5, log_file=nothing, truncate=false)
+    ExecutionEngine(; confidence_threshold=0.85f0, max_position_size=10.0, max_portfolio_exposure=Inf, payoff_ratio=1.5, log_file=nothing, truncate=false)
 
 Create an execution engine. If `log_file` is provided, events are appended as JSON-lines.
 Pass `truncate=true` to truncate an existing log.
@@ -618,6 +635,7 @@ Pass `truncate=true` to truncate an existing log.
 function ExecutionEngine(;
     confidence_threshold::Float32 = Float32(0.85),
     max_position_size::Float64 = 10.0,
+    max_portfolio_exposure::Float64 = Inf,
     payoff_ratio::Float64 = 1.5,
     log_file::Union{String, Nothing} = nothing,
     truncate::Bool = false,
@@ -635,7 +653,9 @@ function ExecutionEngine(;
     engine = ExecutionEngine(
         confidence_threshold,
         max_position_size,
+        max_portfolio_exposure,
         payoff_ratio,
+        Dict{String, Float64}(),
         Dict{String, Float64}(),
         0,
         0,
@@ -670,6 +690,22 @@ end
 Return the event log for this engine.
 """
 events(engine::ExecutionEngine) = engine.events
+
+"""
+    portfolio_risk(engine) -> Float64
+
+Current gross notional portfolio exposure: the sum over tickers of the absolute
+position quantity multiplied by the last execution price seen for that ticker.
+Positions are marked at their last trade price, not the live market.
+"""
+function portfolio_risk(engine::ExecutionEngine)
+    total = 0.0
+    for (ticker, quantity) in engine.positions
+        price = get(engine.last_prices, ticker, 0.0)
+        total += abs(quantity) * price
+    end
+    return total
+end
 
 """
     execute_signal!(engine, signal, account_balance; observed_ns=nothing,
@@ -770,13 +806,41 @@ function execute_signal!(
 
     applied_fraction = account_balance <= 0.0 ? 0.0 : (units * signal.price) / account_balance
 
-    # Update position book
+    # Portfolio exposure cap: gross notional (Σ |quantity| × last trade price)
+    # after applying this signal must not exceed the cap. Signals that only
+    # reduce the existing position in the same ticker lower exposure and are
+    # always allowed.
+    price = Float64(signal.price)
     current = get(engine.positions, signal.ticker, 0.0)
+    projected_quantity = signal.side == Buy ? current + units : current - units
+    prior_ticker_exposure = abs(current) * price
+    projected_ticker_exposure = abs(projected_quantity) * price
+    projected_exposure = portfolio_risk(engine) - prior_ticker_exposure + projected_ticker_exposure
+    if projected_exposure > engine.max_portfolio_exposure
+        engine.rejected_signals += 1
+        reason = "portfolio exposure $(projected_exposure) would exceed cap $(engine.max_portfolio_exposure)"
+        _record_event!(
+            engine,
+            SignalEvent(
+                "portfolio_reject",
+                signal.ticker,
+                signal.confidence,
+                string(signal.side);
+                reason = reason,
+                kelly_fraction = position.kelly_fraction,
+                latency_ns = lat,
+            ),
+        )
+        return ExecutionDecision(signal, false, reason, position.kelly_fraction, 0.0, 0.0, lat)
+    end
+
+    # Update position book
     if signal.side == Buy
         engine.positions[signal.ticker] = current + units
     elseif signal.side == Sell
         engine.positions[signal.ticker] = current - units
     end
+    engine.last_prices[signal.ticker] = price
 
     engine.executed_signals += 1
     _record_event!(

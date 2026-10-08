@@ -101,6 +101,7 @@ unknown keys and values of the wrong type raise `ArgumentError`.
 # engine.toml
 confidence_threshold = 0.90
 max_position_size = 25.0
+max_portfolio_exposure = 100_000.0
 payoff_ratio = 1.75
 log_file = "events.jsonl"
 truncate = true
@@ -110,6 +111,7 @@ truncate = true
 # engine.yaml
 confidence_threshold: 0.90
 max_position_size: 25.0
+max_portfolio_exposure: 100000.0
 payoff_ratio: 1.75
 log_file: events.jsonl
 truncate: true
@@ -120,8 +122,10 @@ engine = load_config("engine.toml")
 ```
 
 The complete schema is `confidence_threshold` (finite number from `0` to `1`),
-`max_position_size` (positive finite number), `payoff_ratio` (positive finite
-number), `log_file` (string, or YAML `null`), and `truncate` (boolean). A
+`max_position_size` (positive finite number), `max_portfolio_exposure` (positive
+number: cap on total gross notional exposure across all tickers, valued at each
+ticker's last execution price), `payoff_ratio` (positive finite number),
+`log_file` (string, or YAML `null`), and `truncate` (boolean). A
 relative `log_file` path is resolved from the directory containing the config.
 
 ### 2. Process a signal manually
@@ -407,6 +411,7 @@ The ZMQ listener expects JSON objects matching this schema:
 | `latency_ns(signal)` | End-to-end latency in nanoseconds |
 | `passes_gate(signal, threshold)` | Boolean check: `signal.confidence >= threshold` |
 | `fill_rate(engine)` | Fraction of signals executed vs. rejected |
+| `portfolio_risk(engine)` | Current gross notional exposure: `Σ |quantity| × last execution price` across all tickers |
 | `load_history(path)` | Load a JSON-lines `SignalEvent` history; returns `SignalEvent[]` for missing/empty files and skips malformed lines |
 | `close_log!(engine)` | Flush and close the event log file handle |
 
