@@ -345,6 +345,30 @@ include("spikes.jl")
         @test dec_sell.executed
         @test portfolio_risk(engine) ≈ 500.0
 
+        # A price rise on a held position is valued at its recorded price when
+        # projecting: 10 units @ 100 held, cap 3_500, buying 10 @ 200 projects
+        # 1_000 - 1_000 + 4_000 = 4_000 → rejected (the old position stays
+        # marked at 100 during projection, not revalued at 200).
+        rising = ExecutionEngine(max_position_size = 10.0, max_portfolio_exposure = 3_500.0)
+        @test execute_signal!(rising, sig("MARKET-A", 100.0, "BUY"), 10_000.0).executed
+        dec_rise = execute_signal!(rising, sig("MARKET-A", 200.0, "BUY"), 10_000.0)
+        @test !dec_rise.executed
+        @test occursin("portfolio exposure", dec_rise.reason)
+
+        # A falling price cannot free phantom headroom either: 10 units @ 100
+        # held, buying 10 @ 50 projects 1_000 - 1_000 + 1_000 = 1_000, which is
+        # accepted, and the book then marks everything at 50.
+        falling = ExecutionEngine(max_position_size = 10.0, max_portfolio_exposure = 1_200.0)
+        @test execute_signal!(falling, sig("MARKET-A", 100.0, "BUY"), 10_000.0).executed
+        dec_fall = execute_signal!(falling, sig("MARKET-A", 50.0, "BUY"), 10_000.0)
+        @test dec_fall.executed
+        @test portfolio_risk(falling) ≈ 1_000.0
+
+        # Constructor rejects NaN and non-positive caps but allows Inf.
+        @test_throws ArgumentError ExecutionEngine(max_portfolio_exposure = NaN)
+        @test_throws ArgumentError ExecutionEngine(max_portfolio_exposure = -1.0)
+        @test ExecutionEngine(max_portfolio_exposure = Inf).max_portfolio_exposure == Inf
+
         # Unlimited by default.
         default_engine = ExecutionEngine()
         for i in 1:5

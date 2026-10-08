@@ -411,7 +411,7 @@ The ZMQ listener expects JSON objects matching this schema:
 | `latency_ns(signal)` | End-to-end latency in nanoseconds |
 | `passes_gate(signal, threshold)` | Boolean check: `signal.confidence >= threshold` |
 | `fill_rate(engine)` | Fraction of signals executed vs. rejected |
-| `portfolio_risk(engine)` | Current gross notional exposure: `Σ |quantity| × last execution price` across all tickers |
+| `portfolio_risk(engine)` | Current gross notional exposure: `Σ abs(quantity) × last execution price` across all tickers |
 | `load_history(path)` | Load a JSON-lines `SignalEvent` history; returns `SignalEvent[]` for missing/empty files and skips malformed lines |
 | `close_log!(engine)` | Flush and close the event log file handle |
 

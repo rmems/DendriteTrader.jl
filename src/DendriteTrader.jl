@@ -640,6 +640,10 @@ function ExecutionEngine(;
     log_file::Union{String, Nothing} = nothing,
     truncate::Bool = false,
 )
+    (isfinite(max_portfolio_exposure) || isinf(max_portfolio_exposure)) &&
+        max_portfolio_exposure > 0.0 || throw(ArgumentError(
+            "max_portfolio_exposure must be positive (Inf means unlimited), got $(repr(max_portfolio_exposure))",
+        ))
     log_io = if log_file === nothing
         nothing
     else
@@ -813,7 +817,7 @@ function execute_signal!(
     price = Float64(signal.price)
     current = get(engine.positions, signal.ticker, 0.0)
     projected_quantity = signal.side == Buy ? current + units : current - units
-    prior_ticker_exposure = abs(current) * price
+    prior_ticker_exposure = abs(current) * get(engine.last_prices, signal.ticker, 0.0)
     projected_ticker_exposure = abs(projected_quantity) * price
     projected_exposure = portfolio_risk(engine) - prior_ticker_exposure + projected_ticker_exposure
     if projected_exposure > engine.max_portfolio_exposure
