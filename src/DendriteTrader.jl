@@ -87,7 +87,7 @@ export validate_signal, execute_signal!, latency_ns, passes_gate
 export DydxClient, DydxPrice, get_price, mid_price, spread_bps
 export RateLimiter, acquire!, set_rate!
 export PriceCache, invalidate!, clear!, cache_size, get_cached, put_cached!, is_fresh
-export start!, stop!, events, fill_rate
+export start!, stop!, events, fill_rate, portfolio_risk
 export kelly_fraction, from_confidence, half_kelly
 export RiskTier, Aggressive, Moderate, Conservative, Minimal, risk_tier
 export PositionSize, size_position
@@ -424,6 +424,7 @@ end
 const _EXECUTION_CONFIG_KEYS = Set((
     "confidence_threshold",
     "max_position_size",
+    "max_portfolio_exposure",
     "payoff_ratio",
     "log_file",
     "truncate",
@@ -431,22 +432,22 @@ const _EXECUTION_CONFIG_KEYS = Set((
 
 function _config_number(config::AbstractDict, key::String, target::Type)
     value = config[key]
-    value isa Real && !(value isa Bool) || throw(ArgumentError(
-        "configuration key `$key` must be a number, got $(repr(value))",
-    ))
+    value isa Real && !(value isa Bool) ||
+        throw(ArgumentError("configuration key `$key` must be a number, got $(repr(value))"))
     converted = try
         target(value)
     catch err
         if err isa ArgumentError || err isa InexactError || err isa OverflowError
-            throw(ArgumentError(
-                "configuration key `$key` must be convertible to $target, got $(repr(value))",
-            ))
+            throw(
+                ArgumentError(
+                    "configuration key `$key` must be convertible to $target, got $(repr(value))",
+                ),
+            )
         end
         rethrow()
     end
-    isfinite(converted) || throw(ArgumentError(
-        "configuration key `$key` must be finite, got $(repr(value))",
-    ))
+    isfinite(converted) ||
+        throw(ArgumentError("configuration key `$key` must be finite, got $(repr(value))"))
     return converted
 end
 
@@ -455,11 +456,14 @@ end
 
 Create an [`ExecutionEngine`](@ref) from a flat TOML (`.toml`) or YAML
 (`.yaml`/`.yml`) file. The supported keys are `confidence_threshold`,
-`max_position_size`, `payoff_ratio`, `log_file`, and `truncate`; omitted keys
-use the constructor defaults. Numeric configuration values are converted to the
-engine's concrete numeric types, and YAML `null` is accepted for `log_file`.
-All numeric values must be finite. `confidence_threshold` must be in `[0, 1]`,
-and `max_position_size` and `payoff_ratio` must be positive. Relative
+`max_position_size`, `max_portfolio_exposure`, `payoff_ratio`, `log_file`, and
+`truncate`; omitted keys use the constructor defaults. Numeric configuration
+values are converted to the engine's concrete numeric types, and YAML `null` is
+accepted for `log_file`. All numeric values must be finite. Omit
+`max_portfolio_exposure` for the unlimited (`Inf`) default; when set in a file
+it must be a positive finite cap. `confidence_threshold` must be in `[0, 1]`, and
+`max_position_size`, `max_portfolio_exposure`, and `payoff_ratio` must be
+positive. Relative
 `log_file` paths are resolved relative to the configuration file.
 
 An unsupported extension, a non-mapping YAML document, an unknown key, or a
@@ -478,37 +482,43 @@ function load_config(path::AbstractString)
 
     config isa AbstractDict || throw(ArgumentError("configuration root must be a mapping"))
     for key in keys(config)
-        key isa AbstractString || throw(ArgumentError("configuration keys must be strings, got $(repr(key))"))
+        key isa AbstractString ||
+            throw(ArgumentError("configuration keys must be strings, got $(repr(key))"))
         key in _EXECUTION_CONFIG_KEYS || throw(ArgumentError("unknown configuration key `$key`"))
     end
 
     kwargs = Pair{Symbol, Any}[]
     if haskey(config, "confidence_threshold")
         confidence_threshold = _config_number(config, "confidence_threshold", Float32)
-        0.0f0 <= confidence_threshold <= 1.0f0 || throw(ArgumentError(
-            "configuration key `confidence_threshold` must be between 0 and 1",
-        ))
+        0.0f0 <= confidence_threshold <= 1.0f0 ||
+            throw(ArgumentError("configuration key `confidence_threshold` must be between 0 and 1"))
         push!(kwargs, :confidence_threshold => confidence_threshold)
     end
     if haskey(config, "max_position_size")
         max_position_size = _config_number(config, "max_position_size", Float64)
-        max_position_size > 0.0 || throw(ArgumentError(
-            "configuration key `max_position_size` must be positive",
-        ))
+        max_position_size > 0.0 ||
+            throw(ArgumentError("configuration key `max_position_size` must be positive"))
         push!(kwargs, :max_position_size => max_position_size)
+    end
+    if haskey(config, "max_portfolio_exposure")
+        max_portfolio_exposure = _config_number(config, "max_portfolio_exposure", Float64)
+        max_portfolio_exposure > 0.0 ||
+            throw(ArgumentError("configuration key `max_portfolio_exposure` must be positive"))
+        push!(kwargs, :max_portfolio_exposure => max_portfolio_exposure)
     end
     if haskey(config, "payoff_ratio")
         payoff_ratio = _config_number(config, "payoff_ratio", Float64)
-        payoff_ratio > 0.0 || throw(ArgumentError(
-            "configuration key `payoff_ratio` must be positive",
-        ))
+        payoff_ratio > 0.0 ||
+            throw(ArgumentError("configuration key `payoff_ratio` must be positive"))
         push!(kwargs, :payoff_ratio => payoff_ratio)
     end
     if haskey(config, "log_file")
         log_file = config["log_file"]
-        (log_file isa AbstractString || isnothing(log_file)) || throw(ArgumentError(
-            "configuration key `log_file` must be a string or null, got $(repr(log_file))",
-        ))
+        (log_file isa AbstractString || isnothing(log_file)) || throw(
+            ArgumentError(
+                "configuration key `log_file` must be a string or null, got $(repr(log_file))",
+            ),
+        )
         resolved_log_file = if isnothing(log_file)
             nothing
         elseif isabspath(log_file)
@@ -520,9 +530,9 @@ function load_config(path::AbstractString)
     end
     if haskey(config, "truncate")
         truncate = config["truncate"]
-        truncate isa Bool || throw(ArgumentError(
-            "configuration key `truncate` must be a Bool, got $(repr(truncate))",
-        ))
+        truncate isa Bool || throw(
+            ArgumentError("configuration key `truncate` must be a Bool, got $(repr(truncate))"),
+        )
         push!(kwargs, :truncate => truncate)
     end
 
@@ -537,8 +547,14 @@ Stateful execution engine with confidence gating and position management.
 # Fields
 - `confidence_threshold`: minimum SNN confidence to execute (default 0.85)
 - `max_position_size`:    hard cap on position units (default 10.0)
+- `max_portfolio_exposure`: cap on total gross notional exposure in price
+                          units across all tickers (default `Inf`, unlimited).
+                          Positions are valued at the last execution price seen
+                          for each ticker; a signal that only reduces an
+                          existing position is never rejected by this cap.
 - `payoff_ratio`:         odds-style average win/loss ratio for Kelly sizing (default 1.5)
 - `positions`:            current open positions (ticker → quantity)
+- `last_prices`:          last execution price per ticker, for exposure valuation
 - `log_file`:             optional path to a JSON-lines event log
 - `log_io`:               open file handle for the event log (if configured)
 - `log_lock`:             lock serializing `log_io` writes
@@ -546,8 +562,10 @@ Stateful execution engine with confidence gating and position management.
 mutable struct ExecutionEngine
     confidence_threshold::Float32
     max_position_size::Float64
+    max_portfolio_exposure::Float64
     payoff_ratio::Float64
     positions::Dict{String, Float64}
+    last_prices::Dict{String, Float64}
     total_signals::Int
     executed_signals::Int
     rejected_signals::Int
@@ -610,7 +628,7 @@ function _record_event!(engine::ExecutionEngine, event::SignalEvent)
 end
 
 """
-    ExecutionEngine(; confidence_threshold=0.85f0, max_position_size=10.0, payoff_ratio=1.5, log_file=nothing, truncate=false)
+    ExecutionEngine(; confidence_threshold=0.85f0, max_position_size=10.0, max_portfolio_exposure=Inf, payoff_ratio=1.5, log_file=nothing, truncate=false)
 
 Create an execution engine. If `log_file` is provided, events are appended as JSON-lines.
 Pass `truncate=true` to truncate an existing log.
@@ -618,10 +636,17 @@ Pass `truncate=true` to truncate an existing log.
 function ExecutionEngine(;
     confidence_threshold::Float32 = Float32(0.85),
     max_position_size::Float64 = 10.0,
+    max_portfolio_exposure::Float64 = Inf,
     payoff_ratio::Float64 = 1.5,
     log_file::Union{String, Nothing} = nothing,
     truncate::Bool = false,
 )
+    (isfinite(max_portfolio_exposure) || isinf(max_portfolio_exposure)) &&
+    max_portfolio_exposure > 0.0 || throw(
+        ArgumentError(
+            "max_portfolio_exposure must be positive (Inf means unlimited), got $(repr(max_portfolio_exposure))",
+        ),
+    )
     log_io = if log_file === nothing
         nothing
     else
@@ -635,7 +660,9 @@ function ExecutionEngine(;
     engine = ExecutionEngine(
         confidence_threshold,
         max_position_size,
+        max_portfolio_exposure,
         payoff_ratio,
+        Dict{String, Float64}(),
         Dict{String, Float64}(),
         0,
         0,
@@ -670,6 +697,22 @@ end
 Return the event log for this engine.
 """
 events(engine::ExecutionEngine) = engine.events
+
+"""
+    portfolio_risk(engine) -> Float64
+
+Current gross notional portfolio exposure: the sum over tickers of the absolute
+position quantity multiplied by the last execution price seen for that ticker.
+Positions are marked at their last trade price, not the live market.
+"""
+function portfolio_risk(engine::ExecutionEngine)
+    total = 0.0
+    for (ticker, quantity) in engine.positions
+        price = get(engine.last_prices, ticker, 0.0)
+        total += abs(quantity) * price
+    end
+    return total
+end
 
 """
     execute_signal!(engine, signal, account_balance; observed_ns=nothing,
@@ -770,13 +813,41 @@ function execute_signal!(
 
     applied_fraction = account_balance <= 0.0 ? 0.0 : (units * signal.price) / account_balance
 
-    # Update position book
+    # Portfolio exposure cap: gross notional (Σ |quantity| × last trade price)
+    # after applying this signal must not exceed the cap. Signals that only
+    # reduce the existing position in the same ticker lower exposure and are
+    # always allowed.
+    price = Float64(signal.price)
     current = get(engine.positions, signal.ticker, 0.0)
+    projected_quantity = signal.side == Buy ? current + units : current - units
+    prior_ticker_exposure = abs(current) * get(engine.last_prices, signal.ticker, 0.0)
+    projected_ticker_exposure = abs(projected_quantity) * price
+    projected_exposure = portfolio_risk(engine) - prior_ticker_exposure + projected_ticker_exposure
+    if projected_exposure > engine.max_portfolio_exposure
+        engine.rejected_signals += 1
+        reason = "portfolio exposure $(projected_exposure) would exceed cap $(engine.max_portfolio_exposure)"
+        _record_event!(
+            engine,
+            SignalEvent(
+                "portfolio_reject",
+                signal.ticker,
+                signal.confidence,
+                string(signal.side);
+                reason = reason,
+                kelly_fraction = position.kelly_fraction,
+                latency_ns = lat,
+            ),
+        )
+        return ExecutionDecision(signal, false, reason, position.kelly_fraction, 0.0, 0.0, lat)
+    end
+
+    # Update position book
     if signal.side == Buy
         engine.positions[signal.ticker] = current + units
     elseif signal.side == Sell
         engine.positions[signal.ticker] = current - units
     end
+    engine.last_prices[signal.ticker] = price
 
     engine.executed_signals += 1
     _record_event!(

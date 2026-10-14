@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Event persistence**: `ExecutionEngine` can append every `SignalEvent` to a JSON-lines log (`log_file` and `truncate` kwargs). New `load_history(path)` reads the log back, skipping missing/empty/malformed lines. New `close_log!(engine)` flushes and closes the log handle.
+- **Portfolio exposure cap**: `ExecutionEngine` accepts `max_portfolio_exposure` (default `Inf`, unlimited), a cap on total gross notional exposure (`Σ |quantity| × last execution price`) across all tickers. `execute_signal!` rejects signals whose resulting exposure would exceed the cap (`portfolio_reject` event); signals that only reduce an existing position are always allowed. New `portfolio_risk(engine)` accessor returns the current gross notional exposure. `load_config` supports the `max_portfolio_exposure` key (must be positive).
 - `SignalEvent` now captures the decision outcome with `executed`, `position_units`, and `applied_fraction` fields, and includes a `schema_version` field in its JSON representation.
 - `BacktestConfig` and `run_backtest` accept an optional `log_file` to persist backtest event trails.
 
