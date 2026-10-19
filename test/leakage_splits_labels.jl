@@ -96,7 +96,9 @@ end
     labels = label_event_horizon(snapshots; horizon_events = horizon)
     row_sequences = [row.sequence for row in frame]
     row_timestamps = [row.exchange_ts_ns for row in frame]
-    @test length(frame) == 64
+    expected_rows = count(i -> i % 5 != 0, 1:length(snapshots))
+    @test length(frame) == expected_rows
+    @test expected_rows < length(snapshots)
     @test row_sequences != collect(1:length(frame))
 
     target_by_anchor = Dict(label.anchor_sequence => label.target_sequence for label in labels)
@@ -145,7 +147,12 @@ end
     n = length(row_sequences)
     target_of(row) =
         row_sequences[row] + horizon <= event_count ? row_sequences[row] + horizon : nothing
-    lookback_of(row) = row_sequences[row] - lookback
+    # Rows whose lookback would start before the first event have no earlier events to
+    # read; return `nothing` so a non-positive start cannot satisfy the violation check
+    # by construction.
+    lookback_of(row) =
+        row_sequences[row] - lookback < first(row_sequences) ? nothing :
+        row_sequences[row] - lookback
 
     split_kwargs = (train_size = 30, validation_size = 9, test_size = 9)
 
@@ -163,8 +170,17 @@ end
     # than one row maps to an event. These assertions document the leak and will start
     # passing (and must be flipped to @test) once splits are sequence-aware or reject
     # duplicate sequences.
-    @test_broken isempty(label_horizon_violations(documented, row_sequences, target_of))
-    @test_broken isempty(feature_lookback_violations(documented, row_sequences, lookback_of))
+    label_violations = label_horizon_violations(documented, row_sequences, target_of)
+    lookback_violations = feature_lookback_violations(documented, row_sequences, lookback_of)
+    @test_broken isempty(label_violations)
+    @test_broken isempty(lookback_violations)
+    # The violations are real event overlaps, not lookback starts at or below zero: e.g.
+    # split 1 trains through row 30 (sequence 10) and validates from row 33 (sequence 11),
+    # so train row 25 (sequence 9) has a target at sequence 11 inside validation, and
+    # validation row 33 (sequence 11) reads back to sequence 9 inside train.
+    @test (1, 25) in label_violations
+    @test (1, 33) in lookback_violations
+    @test all(lookback_of(row) >= first(row_sequences) for (_, row) in lookback_violations)
 
     # Scaling the row embargo by rows-per-event removes the overlap, which confirms the
     # violation above is a unit mismatch rather than a test artifact.
@@ -188,9 +204,11 @@ ridge_parameters(model) =
     horizon = 3
     train_rows = 30
     original = [varied_snapshot(i) for i in 1:60]
-    # Rewrite every event after the training frame. This flips the labels anchored at
-    # the last `horizon` training rows (their targets fall after the frame end) and
-    # every test-period label.
+    # Rewrite every event after the training frame by shifting bid and ask up by the
+    # same 500 ticks. Labels whose anchor and target both lie past the boundary keep
+    # their relative movement and do not change. Only labels anchored inside the train
+    # frame whose targets cross the boundary (the straddling labels, which are exactly
+    # the leak surface) flip.
     altered = [i <= train_rows ? original[i] : varied_snapshot(i; offset = 500) for i in 1:60]
 
     frame_original = microstructure_features(original)
@@ -204,9 +222,20 @@ ridge_parameters(model) =
     @test labels_original != labels_altered
     straddling = [l for l in labels_original if l.anchor_sequence <= boundary < l.target_sequence]
     @test length(straddling) == horizon
-    # The rewrite must actually change at least one straddling label, or the
-    # parameter-equality checks below would be vacuous.
-    @test any(l -> !(l in labels_altered), straddling)
+    # The rewrite must flip at least one label, or the parameter-equality checks below
+    # would be vacuous, and every flipped label must be a straddling one.
+    @test length(labels_original) == length(labels_altered)
+    flipped = [
+        original_label for
+        (original_label, altered_label) in zip(labels_original, labels_altered) if
+        original_label != altered_label
+    ]
+    @test all(
+        o.anchor_sequence == a.anchor_sequence && o.target_sequence == a.target_sequence for
+        (o, a) in zip(labels_original, labels_altered)
+    )
+    @test length(flipped) > 0
+    @test all(l -> l in straddling, flipped)
 
     with_future = fit!(RidgeClassifier(), train_original, labels_original)
     with_altered_future = fit!(RidgeClassifier(), train_altered, labels_altered)
@@ -264,17 +293,57 @@ end
 
 # ── 3. MovementTarget cannot reach the decision path ─────────────────────────
 
-"""True when any method of `f` declares `MovementTarget` (or a container of it) positionally."""
-accepts_movement_target(f) = any(m -> occursin("MovementTarget", string(m.sig)), methods(f))
+"""
+True when type expression `T` names a subtype of `X` anywhere inside it: directly, as a
+`Union` member, as a type parameter (e.g. `AbstractVector{MovementTarget}`), inside a
+`Vararg`, or as a `TypeVar` bound of a `UnionAll` (e.g. `Vector{<:MovementTarget}`).
+`Any` and `Union{}` do not count, so an untyped argument is not reported.
+"""
+function mentions_type(T, X::Type, seen = Base.IdSet{Any}())
+    T in seen && return false
+    push!(seen, T)
+    if T isa TypeVar
+        return mentions_type(T.lb, X, seen) || mentions_type(T.ub, X, seen)
+    elseif T isa UnionAll
+        return mentions_type(T.var, X, seen) || mentions_type(T.body, X, seen)
+    elseif T isa Union
+        return any(U -> mentions_type(U, X, seen), Base.uniontypes(T))
+    elseif T isa Core.TypeofVararg
+        return isdefined(T, :T) && mentions_type(T.T, X, seen)
+    elseif T isa DataType
+        T === Any && return false
+        T <: X && return true
+        return any(P -> mentions_type(P, X, seen), T.parameters)
+    end
+    return false
+end
 
-"""True when any field of `T` is typed with `MovementTarget`."""
-carries_movement_target(T::Type) = any(F -> occursin("MovementTarget", string(F)), fieldtypes(T))
+"""
+True when any method of `f` declares a positional argument whose type mentions
+`MovementTarget`. The first signature entry (`typeof(f)`) is skipped. Keyword argument
+types are not part of method signatures, so they are covered by the behavioral
+`MethodError` checks below rather than by this detector.
+"""
+accepts_movement_target(f) = any(methods(f)) do m
+    sig = Base.unwrap_unionall(m.sig)
+    any(P -> mentions_type(P, MovementTarget), sig.parameters[2:end])
+end
+
+"""True when any field type of `T` mentions `MovementTarget`."""
+carries_movement_target(T::Type) = any(F -> mentions_type(F, MovementTarget), fieldtypes(T))
 
 # Deliberately leaky decision-path function and row type used as detector controls.
 leaky_predict(model, frame::FeatureFrame, targets::AbstractVector{MovementTarget}) = nothing
+leaky_encode(frame::FeatureFrame, target::Union{Nothing, MovementTarget}) = nothing
+leaky_size(targets::Vector{<:MovementTarget}, rest::Vararg{Int}) = nothing
+leaky_varargs(rows::Vararg{MovementTarget}) = nothing
 struct LeakyRow
     sequence::Int64
     target::MovementTarget
+end
+struct LeakyOptionalRow
+    sequence::Int64
+    target::Union{Nothing, Vector{MovementTarget}}
 end
 
 @testset "MovementTarget is unreachable from decision-path APIs" begin
@@ -320,6 +389,14 @@ end
     # intended consumer (`fit!` for models) and a deliberately leaky predictor.
     @test accepts_movement_target(fit!)
     @test accepts_movement_target(leaky_predict)
+    @test accepts_movement_target(leaky_encode)
+    @test accepts_movement_target(leaky_size)
+    @test accepts_movement_target(leaky_varargs)
+    @test carries_movement_target(LeakyOptionalRow)
+    # Untyped (`Any`) arguments and unrelated parameterized types are not reported.
+    @test !mentions_type(Any, MovementTarget)
+    @test !mentions_type(Vector{MovementLabel}, MovementTarget)
+    @test !mentions_type(Union{}, MovementTarget)
     @test carries_movement_target(LeakyRow)
 end
 
