@@ -617,6 +617,19 @@ function _on_trade_print!(state::_SimState, event::TradePrint)
             _within_limit(side, event.price_ticks, price) &&
             push!(prices, price)
     end
+    # How the replayed data itself will remove this print: an aggressor sweeps displayed
+    # levels from the best price to the print price. Our orders do not exist in the data,
+    # so lots they absorbed in the simulated world may still be removed from displayed
+    # levels they never reached in the simulated world.
+    data_walk = Dict{Int64, Int64}()
+    real_remaining = Int64(event.size)
+    for price in sort!(collect(keys(_levels(state.venue, book_side))); rev = side == Buy)
+        _within_limit(side, event.price_ticks, price) || continue
+        real_remaining > 0 || break
+        take = min(real_remaining, _effective_size(state.venue, state.depletion, book_side, price))
+        data_walk[price] = take
+        real_remaining -= take
+    end
     budget = Int128(event.size)
     # No early exit: even when better levels exhaust the print, the print-price level must
     # still record that the data's removal of traded size did not happen in the
@@ -657,18 +670,29 @@ function _on_trade_print!(state::_SimState, event::TradePrint)
             total_after = max(Int128(0), ahead - budget)
             order.queue_ahead_lots = Int64(max(Int128(0), total_after - _own_ahead(resting, order)))
         end
-        # Keep simulated-world venue size = replayed displayed size + absorbed. Venue lots
-        # the simulated world traded here leave it; the replayed data is expected to remove
-        # up to the print size of displayed size, at the print price only.
+        # Simulated-world venue size = replayed displayed size + absorbed. The replayed data
+        # is expected to remove up to the print size of displayed size at the print price.
+        # Venue lots the simulated world traded here leave it. `absorbed` is never allowed
+        # below zero: displayed size at a better level can be stale (the trade arrives
+        # before the book delta that reflects it), and treating it as consumed here would
+        # remove the same lots twice once that delta arrives, leaving later orders with too
+        # little venue size ahead (optimistic). Overstating venue size is the conservative
+        # direction.
         consumed = min(budget, level_queue)
         venue_consumed = Int64(consumed) - own_filled
-        data_removed =
-            price == event.price_ticks ?
-            min(event.size, _effective_size(state.venue, state.depletion, book_side, price)) :
-            Int64(0)
+        # Either the data removes the traded size at the print price, or the sweep walk
+        # above removes it from better displayed levels; feeds differ, so take the larger
+        # estimate at each level (overstating resting venue size is conservative).
+        data_removed = get(data_walk, price, Int64(0))
+        if price == event.price_ticks
+            data_removed = max(
+                data_removed,
+                min(event.size, _effective_size(state.venue, state.depletion, book_side, price)),
+            )
+        end
         key = (book_side, price)
-        state.absorbed[key] = get(state.absorbed, key, Int64(0)) + data_removed - venue_consumed
-        state.absorbed[key] == 0 && delete!(state.absorbed, key)
+        updated = max(Int64(0), get(state.absorbed, key, Int64(0)) + data_removed - venue_consumed)
+        updated == 0 ? delete!(state.absorbed, key) : (state.absorbed[key] = updated)
         budget -= consumed
     end
     return nothing

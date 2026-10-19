@@ -144,62 +144,95 @@ _pick!(rng::_Lcg, values) = values[1 + _draw!(rng, length(values))]
 
 # Build (events, join actions, oracle script) for one random two-sided, multi-level
 # sequence. Bid data levels 97-100 and ask data levels 102-105 never cross; simulated buys
-# rest at 98-101 and sells at 102-105 (never marketable). Prints trade at the best data
-# price on the hit side, and the data then removes up to the print size at that price.
-function _random_queue_case(seed::Integer; steps::Integer = 24)
+# rest at 98-101 and sells at 102-105 (never marketable). A print trades at the best data
+# price or, with `stale_feed`, at a worse data price while better levels are still displayed
+# (the trade arrived before the book deltas). The data's removal of the traded size can be
+# delayed past later events. Those removals are not oracle operations: the oracle already
+# consumed the traded lots, exactly as the simulator must account for them.
+function _random_queue_case(seed::Integer; steps::Integer = 24, stale_feed::Bool = false)
     rng = _Lcg(UInt64(seed) * 0x9e3779b97f4a7c15 + 1)
     events = MarketEvent[]
     script = Any[]
     joins = Dict{Int, Any}()
     data = Dict{Tuple{Symbol, Int64}, Int64}()
+    pending = Dict{Tuple{Symbol, Int64}, Int64}()   # traded size whose delta is delayed
+    delayed = Tuple{Int, Symbol, Int64, Int64}[]    # (release step, side, price, size)
     seq = 0
     ts = 10
     order_id = 0
     emit!(event) = (push!(events, event); event)
     book_side(side) = side == :bid ? Bid : Ask
+    free(key) = get(data, key, 0) - get(pending, key, 0)
     function add!(side, price, k; scripted = true)
         seq += 1
         emit!(_bd(seq, ts, book_side(side), price, k))
         data[(side, price)] = get(data, (side, price), 0) + k
         scripted && push!(script, (:add, side, Int64(price), Int64(k)))
     end
+    function remove_traded!(side, price, k)
+        seq += 1
+        emit!(_bd(seq, ts, book_side(side), price, -k))
+        data[(side, price)] -= k
+        pending[(side, price)] -= k
+    end
     add!(:bid, 90, 1; scripted = false)
     add!(:ask, 110, 1; scripted = false)
-    for _ in 1:steps
-        roll = _draw!(rng, 12)
+    for step in 1:steps
         ts += 10
+        due = [d for d in delayed if first(d) <= step]
+        filter!(d -> first(d) > step, delayed)
+        for (_, side, price, k) in due
+            remove_traded!(side, price, k)
+        end
+        roll = _draw!(rng, 12)
         side = _draw!(rng, 2) == 0 ? :bid : :ask
         prices = side == :bid ? (97:100) : (102:105)
         if roll < 4
             add!(side, _pick!(rng, prices), 1 + _draw!(rng, 6))
         elseif roll < 6
             live = [
-                key for (key, size) in data if first(key) == side && size > 0 && last(key) in prices
+                key for
+                key in keys(data) if first(key) == side && last(key) in prices && free(key) > 0
             ]
             isempty(live) && continue
             key = _pick!(rng, sort!(live))
-            k = 1 + _draw!(rng, data[key])
+            k = 1 + _draw!(rng, free(key))
             seq += 1
             emit!(_bd(seq, ts, book_side(side), last(key), -k))
             data[key] -= k
             push!(script, (:cancel, side, Int64(last(key)), Int64(k)))
         elseif roll < 9
-            levels = [
-                last(key) for
-                (key, size) in data if first(key) == side && size > 0 && last(key) in prices
-            ]
+            levels = sort!(
+                [
+                    last(key) for key in keys(data) if
+                    first(key) == side && last(key) in prices && free(key) > 0
+                ];
+                rev = side == :bid,
+            )
             isempty(levels) && continue
-            price = side == :bid ? maximum(levels) : minimum(levels)
+            price = stale_feed && _draw!(rng, 2) == 0 ? _pick!(rng, levels) : first(levels)
             k = 1 + _draw!(rng, 10)
             aggressor = side == :bid ? Sell : Buy
             seq += 1
             emit!(_tp(seq, ts, aggressor, price, k))
             push!(script, (:trade, side == :bid ? :sell : :buy, Int64(price), Int64(k)))
-            traded = min(k, data[(side, price)])
-            if traded > 0
-                seq += 1
-                emit!(_bd(seq, ts, book_side(side), price, -traded))
-                data[(side, price)] -= traded
+            # The aggressor sweeps every displayed level from the best price to the print
+            # price; the data removes what it traded at each of those levels, possibly
+            # after later events (stale_feed).
+            remaining = k
+            for level in levels
+                (side == :bid ? level >= price : level <= price) || break
+                traded = min(remaining, free((side, level)))
+                traded > 0 || continue
+                remaining -= traded
+                pending[(side, level)] = get(pending, (side, level), 0) + traded
+                lag = stale_feed ? _draw!(rng, 4) : 0
+                if lag == 0
+                    remove_traded!(side, level, traded)
+                else
+                    push!(delayed, (step + lag, side, Int64(level), Int64(traded)))
+                end
+                remaining == 0 && break
             end
         else
             k = 1 + _draw!(rng, 5)
@@ -213,8 +246,11 @@ function _random_queue_case(seed::Integer; steps::Integer = 24)
             push!(script, (:join, side, Int64(price), Int64(k), order_id))
         end
     end
-    seq += 1
     ts += 10
+    for (_, side, price, k) in delayed
+        remove_traded!(side, price, k)
+    end
+    seq += 1
     emit!(_bd(seq, ts, Bid, 90, 1))
     return events, joins, script
 end
@@ -863,7 +899,12 @@ end
             max_initial_cash_subunits = 100_000_000,
             max_open_orders = 64,
         )
-        for (mode, seed) in ((:back, UInt64(0)), (:random, UInt64(0x5eed)))
+        for (mode, seed, stale_feed) in (
+            (:back, UInt64(0), false),
+            (:random, UInt64(0x5eed), false),
+            (:back, UInt64(0), true),
+            (:random, UInt64(0x5eed), true),
+        )
             exceeded = Tuple{Int, Int, Int64, Int64}[]
             total_sim = Int64(0)
             total_oracle = Int64(0)
@@ -871,7 +912,7 @@ end
             multi_level = 0
             reconciled = true
             for case in 1:300
-                events, joins, script = _random_queue_case(case)
+                events, joins, script = _random_queue_case(case; stale_feed = stale_feed)
                 result = simulate!(
                     PaperPortfolio(_SIM_INSTRUMENT, 100_000_000; mode = :signed),
                     _session(events),
@@ -898,7 +939,7 @@ end
                 total_oracle += sum(values(expected); init = 0)
                 reconciled &= isempty(reconciliation_errors(result))
             end
-            @info "price-time oracle comparison" mode cases_with_fills multi_level total_sim total_oracle length(
+            @info "price-time oracle comparison" mode stale_feed cases_with_fills multi_level total_sim total_oracle length(
                 exceeded,
             )
             isempty(exceeded) || @info "simulator over-filled vs oracle" mode first(exceeded, 5)
@@ -961,6 +1002,53 @@ end
             config = _config(10),
         )
         @test [(f.order_id, f.price_ticks, f.qty_lots, f.trigger) for f in crossed.fills] == [(2, 101, 5, :quote_through)]
+    end
+
+    @testset "Leakage 10: trades arriving before their book deltas cannot shrink later queues" begin
+        # Separate trade and book feeds: the 99 print arrives while the 100 level it swept is
+        # still displayed. Exact FIFO puts the later buy behind 4 venue lots at 100, so a
+        # 2-lot print must not fill it. (At d7d4abc `absorbed` went negative at 100, the
+        # order joined with 1 lot ahead and filled 1 lot.)
+        function run(book_first::Bool)
+            events =
+                book_first ?
+                MarketEvent[
+                    _bd(1, 100, Bid, 100, 10),
+                    _bd(2, 100, Bid, 99, 5),
+                    _bd(3, 100, Ask, 102, 10),
+                    _tp(4, 200, Sell, 100, 10),
+                    _bd(5, 205, Bid, 100, -10),
+                    _tp(6, 210, Sell, 99, 3),
+                    _bd(7, 220, Bid, 99, -3),
+                    _bd(8, 300, Bid, 100, 4),
+                    _tp(9, 400, Sell, 100, 2),
+                ] :
+                MarketEvent[
+                    _bd(1, 100, Bid, 100, 10),
+                    _bd(2, 100, Bid, 99, 5),
+                    _bd(3, 100, Ask, 102, 10),
+                    _tp(4, 200, Sell, 100, 10),
+                    _tp(5, 210, Sell, 99, 3),
+                    _bd(6, 220, Bid, 100, -10),
+                    _bd(7, 220, Bid, 99, -3),
+                    _bd(8, 300, Bid, 100, 4),
+                    _tp(9, 400, Sell, 100, 2),
+                ]
+            return simulate!(
+                _portfolio(),
+                _session(events),
+                _at_sequence(8, OrderIntent(Buy, 1, 100));
+                config = _config(10),
+            )
+        end
+        stale = run(false)
+        @test only(stale.orders).initial_queue_ahead_lots == 4
+        @test isempty(stale.fills)
+        @test isempty(reconciliation_errors(stale))
+        # Control: the same events with the book delta delivered first give the same queue.
+        ordered = run(true)
+        @test only(ordered.orders).initial_queue_ahead_lots == 4
+        @test isempty(ordered.fills)
     end
 
     @testset "Orders activating after the last replayed event never fill" begin

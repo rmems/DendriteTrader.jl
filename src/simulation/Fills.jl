@@ -112,7 +112,7 @@ const _FILL_ASSUMPTIONS = (
     "simulator-consumed displayed liquidity is unavailable until the level is removed",
     "queue advances only on prints at the order price, or when the level shrinks below it",
     "simulated orders at one level are FIFO by join order; venue cancels never skip them",
-    "print volume absorbed by simulated orders stays as resting venue size at that level",
+    "venue lots the replayed data removes for a print, but which the simulated world did not trade, stay resting",
     "prints walk the hit side best price first; each level's whole FIFO queue is consumed first",
     "displayed liquidity strictly through a resting limit fills it as maker at the limit, best price first",
     "a locked quote at the resting limit does not fill",
