@@ -65,6 +65,9 @@ function _signed_mark_value(scale::ParityScale, mark_price_ticks::Integer, inven
     return inventory > 0 ? value : -value
 end
 
+"""Payload identity of an applied fill: time, instrument, side, price, qty, fee."""
+const _FillFingerprint = Tuple{Int64, String, TradeSide, Int64, Int64, Int64}
+
 """One audit row, field-for-field the `metabolic-ledger` `AuditRecord`."""
 struct AuditRow
     event_time_ns::Int64
@@ -142,7 +145,7 @@ mutable struct PaperPortfolio
     total_cost_subunits::Int64
     realized_pnl_subunits::Int64
     fees_subunits::Int64
-    applied::Dict{String, NTuple{6, Any}}
+    applied::Dict{String, _FillFingerprint}
     audit::Vector{AuditRow}
     simulation_runs::Int
 end
@@ -167,7 +170,7 @@ function PaperPortfolio(
         0,
         0,
         0,
-        Dict{String, NTuple{6, Any}}(),
+        Dict{String, _FillFingerprint}(),
         AuditRow[],
         0,
     )
@@ -248,6 +251,7 @@ function apply_fill!(
 )
     isempty(fill_id) && _fail(:malformed_input, "fill_id must be non-empty")
     event_time_ns >= 0 || _fail(:malformed_input, "event_time_ns must be non-negative")
+    _checked_i64(event_time_ns, "event_time_ns")
     _check_instrument(p, instrument)
     side in (Buy, Sell) || _fail(:malformed_input, "fill side must be Buy or Sell")
     notional = notional_subunits(p.scale, price_ticks, qty_lots)
@@ -380,12 +384,14 @@ function record_non_fill!(
 )
     kind in (:reject, :cancel, :non_fill) ||
         _fail(:malformed_input, "non-fill kind must be :reject, :cancel or :non_fill")
+    event_time_ns >= 0 || _fail(:malformed_input, "event_time_ns must be non-negative")
+    time = _checked_i64(event_time_ns, "event_time_ns")
     _check_instrument(p, instrument)
     isempty(order_id) && _fail(:malformed_input, "order_id must be non-empty")
     push!(
         p.audit,
         AuditRow(
-            Int64(event_time_ns),
+            time,
             kind,
             nothing,
             String(order_id),

@@ -33,20 +33,53 @@ _fill_ts_ok(result, latency) =
 # Two-sided base book: bid 100 x 10, ask 102 x 10 at t = 100.
 _base_events() = MarketEvent[_bd(1, 100, Bid, 100, 10), _bd(2, 100, Ask, 102, 10)]
 
-# ── Independent exact-FIFO reference for one bid level (test-only oracle) ────
-# The simulated world's queue at the level is a list of segments in time priority:
-# (:venue, lots) or (order_id, lots). Venue adds append; venue cancels remove venue lots
-# from the back first (the simulator's declared conservative rule); a sell print at the
-# level consumes the head. Simulated orders never change the replayed data, so traded
-# venue lots reported by the data are not removed twice.
-function _fifo_oracle(script)
-    segments = Vector{Pair{Any, Int64}}()
+# ── Independent exact price-time-priority reference (test-only oracle) ────────
+# Every price level on each side of the simulated world is a FIFO list of segments
+# (:venue => lots) or (order_id => lots). Venue adds append; venue cancels remove venue
+# lots from the back first (the simulator's declared conservative rule); simulated orders
+# join behind every earlier simulated order at their level and behind `ahead` venue lots
+# (`:back` = all of them, `:random` = the simulator's seeded draw). A print walks the hit
+# side from the best price to the print price and consumes each level's queue head first.
+# Simulated orders never change the replayed data, so the data's removal of traded size is
+# not applied again here.
+const _OracleBook = Dict{Tuple{Symbol, Int64}, Vector{Pair{Any, Int64}}}
+
+_venue_lots(segments) = sum((last(x) for x in segments if first(x) == :venue); init = Int64(0))
+
+function _oracle_join!(segments, order_id::Int, lots::Int64, ahead::Int64)
+    last_own = something(findlast(x -> first(x) isa Int, segments), 0)
+    venue_seen = Int64(0)
+    index = 1
+    while index <= length(segments)
+        owner, size = segments[index]
+        if index > last_own && venue_seen >= ahead
+            break
+        elseif owner == :venue && index > last_own && venue_seen + size > ahead
+            keep = ahead - venue_seen
+            segments[index] = :venue => keep
+            insert!(segments, index + 1, :venue => size - keep)
+            index += 1
+            break
+        end
+        owner == :venue && (venue_seen += size)
+        index += 1
+    end
+    insert!(segments, index, order_id => lots)
+    filter!(x -> last(x) > 0, segments)
+    return segments
+end
+
+function _fifo_oracle(script; queue_position::Symbol = :back, seed::UInt64 = UInt64(0))
+    book = _OracleBook()
     fills = Dict{Int, Int64}()
-    next_order = 0
-    for (op, k) in script
+    for step in script
+        op = first(step)
         if op == :add
-            push!(segments, :venue => k)
+            _, side, price, k = step
+            push!(get!(book, (side, price), Pair{Any, Int64}[]), :venue => k)
         elseif op == :cancel
+            _, side, price, k = step
+            segments = get!(book, (side, price), Pair{Any, Int64}[])
             remaining = k
             for index in length(segments):-1:1
                 remaining == 0 && break
@@ -55,21 +88,46 @@ function _fifo_oracle(script)
                 segments[index] = :venue => last(segments[index]) - take
                 remaining -= take
             end
+            filter!(x -> last(x) > 0, segments)
         elseif op == :join
-            next_order += 1
-            push!(segments, next_order => k)
+            _, side, price, k, order_id = step
+            segments = get!(book, (side, price), Pair{Any, Int64}[])
+            venue = _venue_lots(segments)
+            ahead = if queue_position == :back
+                venue
+            else
+                Int64(
+                    DendriteTrader.Simulation._splitmix64(seed ⊻ UInt64(order_id)) %
+                    UInt64(venue + 1),
+                )
+            end
+            _oracle_join!(segments, order_id, k, ahead)
         elseif op == :trade
+            _, aggressor, price, k = step
+            side = aggressor == :sell ? :bid : :ask
+            levels = sort!(
+                [
+                    key for key in keys(book) if
+                    first(key) == side && (side == :bid ? last(key) >= price : last(key) <= price)
+                ];
+                by = last,
+                rev = side == :bid,
+            )
             remaining = k
-            for index in eachindex(segments)
+            for key in levels
+                segments = book[key]
+                for index in eachindex(segments)
+                    remaining == 0 && break
+                    owner, lots = segments[index]
+                    take = min(remaining, lots)
+                    segments[index] = owner => lots - take
+                    remaining -= take
+                    owner isa Int && take > 0 && (fills[owner] = get(fills, owner, 0) + take)
+                end
+                filter!(x -> last(x) > 0, segments)
                 remaining == 0 && break
-                owner, lots = segments[index]
-                take = min(remaining, lots)
-                segments[index] = owner => lots - take
-                remaining -= take
-                owner isa Int && take > 0 && (fills[owner] = get(fills, owner, 0) + take)
             end
         end
-        filter!(segment -> last(segment) > 0, segments)
     end
     return fills
 end
@@ -82,53 +140,80 @@ function _draw!(rng::_Lcg, n::Integer)
     rng.state = rng.state * 0x5851f42d4c957f2d + 0x14057b7ef767814f
     return Int((rng.state >> 33) % UInt64(n))
 end
+_pick!(rng::_Lcg, values) = values[1 + _draw!(rng, length(values))]
 
-# Build (events, join actions, oracle script) for one random single-level sequence.
-function _random_queue_case(seed::Integer; steps::Integer = 14)
+# Build (events, join actions, oracle script) for one random two-sided, multi-level
+# sequence. Bid data levels 97-100 and ask data levels 102-105 never cross; simulated buys
+# rest at 98-101 and sells at 102-105 (never marketable). Prints trade at the best data
+# price on the hit side, and the data then removes up to the print size at that price.
+function _random_queue_case(seed::Integer; steps::Integer = 24)
     rng = _Lcg(UInt64(seed) * 0x9e3779b97f4a7c15 + 1)
-    events = MarketEvent[_bd(1, 10, Ask, 105, 5)]
-    script = Tuple{Symbol, Int64}[]
+    events = MarketEvent[]
+    script = Any[]
     joins = Dict{Int, Any}()
-    data_level = 0
-    seq = 1
+    data = Dict{Tuple{Symbol, Int64}, Int64}()
+    seq = 0
     ts = 10
+    order_id = 0
     emit!(event) = (push!(events, event); event)
+    book_side(side) = side == :bid ? Bid : Ask
+    function add!(side, price, k; scripted = true)
+        seq += 1
+        emit!(_bd(seq, ts, book_side(side), price, k))
+        data[(side, price)] = get(data, (side, price), 0) + k
+        scripted && push!(script, (:add, side, Int64(price), Int64(k)))
+    end
+    add!(:bid, 90, 1; scripted = false)
+    add!(:ask, 110, 1; scripted = false)
     for _ in 1:steps
-        roll = _draw!(rng, 10)
+        roll = _draw!(rng, 12)
         ts += 10
-        if roll < 3
-            k = 1 + _draw!(rng, 6)
+        side = _draw!(rng, 2) == 0 ? :bid : :ask
+        prices = side == :bid ? (97:100) : (102:105)
+        if roll < 4
+            add!(side, _pick!(rng, prices), 1 + _draw!(rng, 6))
+        elseif roll < 6
+            live = [key for (key, size) in data if first(key) == side && size > 0 && last(key) in prices]
+            isempty(live) && continue
+            key = _pick!(rng, sort!(live))
+            k = 1 + _draw!(rng, data[key])
             seq += 1
-            emit!(_bd(seq, ts, Bid, 100, k))
-            data_level += k
-            push!(script, (:add, k))
-        elseif roll < 5 && data_level > 0
-            k = 1 + _draw!(rng, data_level)
+            emit!(_bd(seq, ts, book_side(side), last(key), -k))
+            data[key] -= k
+            push!(script, (:cancel, side, Int64(last(key)), Int64(k)))
+        elseif roll < 9
+            levels = [
+                last(key) for (key, size) in data if
+                first(key) == side && size > 0 && last(key) in prices
+            ]
+            isempty(levels) && continue
+            price = side == :bid ? maximum(levels) : minimum(levels)
+            k = 1 + _draw!(rng, 10)
+            aggressor = side == :bid ? Sell : Buy
             seq += 1
-            emit!(_bd(seq, ts, Bid, 100, -k))
-            data_level -= k
-            push!(script, (:cancel, k))
-        elseif roll < 8
-            k = 1 + _draw!(rng, 8)
-            seq += 1
-            emit!(_tp(seq, ts, Sell, 100, k))
-            traded = min(k, data_level)
+            emit!(_tp(seq, ts, aggressor, price, k))
+            push!(script, (:trade, side == :bid ? :sell : :buy, Int64(price), Int64(k)))
+            traded = min(k, data[(side, price)])
             if traded > 0
                 seq += 1
-                emit!(_bd(seq, ts, Bid, 100, -traded))
-                data_level -= traded
+                emit!(_bd(seq, ts, book_side(side), price, -traded))
+                data[(side, price)] -= traded
             end
-            push!(script, (:trade, k))
         else
             k = 1 + _draw!(rng, 5)
+            order_side = side == :bid ? Buy : Sell
+            price = side == :bid ? _pick!(rng, 98:101) : _pick!(rng, 102:105)
             seq += 1
             emit!(_bd(seq, ts, Bid, 90, 1))   # observation that triggers the join
-            joins[seq] = OrderIntent(Buy, k, 100)
-            push!(script, (:join, k))
+            data[(:bid, 90)] += 1
+            order_id += 1
+            joins[seq] = OrderIntent(order_side, k, price)
+            push!(script, (:join, side, Int64(price), Int64(k), order_id))
         end
     end
     seq += 1
-    emit!(_bd(seq, ts + 10, Bid, 90, 1))
+    ts += 10
+    emit!(_bd(seq, ts, Bid, 90, 1))
     return events, joins, script
 end
 
@@ -143,6 +228,34 @@ end
         @test_throws ArgumentError FixedFeedDelay(-1)
         @test_throws ArgumentError L2QueueApproximation(queue_position = :front)
         @test_throws ArgumentError FeeSchedule(taker_fee_ppm = 2_000_000)
+        for bad in (typemin(Int64), typemax(Int64), 1_000_001, -1_000_001)
+            @test_throws ArgumentError FeeSchedule(maker_fee_ppm = bad)
+            @test_throws ArgumentError FeeSchedule(taker_fee_ppm = bad)
+        end
+        for ok in (1_000_000, -1_000_000)
+            @test FeeSchedule(maker_fee_ppm = ok, taker_fee_ppm = ok) isa FeeSchedule
+        end
+        guarded = _portfolio()
+        @test_throws PortfolioError record_non_fill!(guarded, :cancel, "o1", -1, _SIM_INSTRUMENT, "x")
+        @test_throws PortfolioError record_non_fill!(
+            guarded,
+            :cancel,
+            "o1",
+            typemax(UInt64),
+            _SIM_INSTRUMENT,
+            "x",
+        )
+        @test_throws PortfolioError apply_fill!(
+            guarded,
+            "f",
+            typemax(UInt64),
+            _SIM_INSTRUMENT,
+            Buy,
+            100,
+            1,
+            0,
+        )
+        @test isempty(guarded.audit)
         @test_throws ArgumentError RiskLimits(max_order_lots = 0)
         @test_throws PortfolioError ParityScale(0, 1)
         @test_throws PortfolioError PaperPortfolio("", 0)
@@ -643,11 +756,11 @@ end
         events = MarketEvent[
             _bd(1, 100, Bid, 100, 10),
             _bd(2, 100, Ask, 102, 10),
-            _bd(3, 150, Bid, 101, 1),
+            _bd(3, 150, Bid, 90, 1),
             _bd(4, 200, Bid, 100, -4),
             _tp(5, 300, Sell, 100, 9),
             _bd(6, 301, Bid, 100, -6),
-            _bd(7, 400, Bid, 101, -1),
+            _bd(7, 400, Bid, 90, -1),
         ]
         actions = Dict{Int, Any}(2 => OrderIntent(Buy, 3, 100), 3 => OrderIntent(Buy, 5, 100))
         result =
@@ -711,51 +824,170 @@ end
         @test [o.initial_queue_ahead_lots for o in venue_first.orders] == [10, 15]
     end
 
-    @testset "Queue fills never exceed an exact FIFO oracle (randomized)" begin
-        @test _fifo_oracle([(:add, 10), (:join, 5), (:trade, 12)]) == Dict(1 => 2)
-        @test _fifo_oracle([(:join, 5), (:add, 10), (:join, 5), (:trade, 8), (:trade, 3)]) ==
-              Dict(1 => 5)
-        exceeded = Tuple{Int, Int, Int64, Int64}[]
-        total_sim = Int64(0)
-        total_oracle = Int64(0)
-        cases_with_fills = 0
-        for seed in 1:400
-            events, joins, script = _random_queue_case(seed)
-            result = simulate!(
-                PaperPortfolio(_SIM_INSTRUMENT, 10_000_000),
-                _session(events),
-                _at_sequence(joins);
-                config = _config(
-                    1;
-                    limits = RiskLimits(
-                        max_order_lots = 100,
-                        max_inventory_lots = 1_000,
-                        max_initial_cash_subunits = 10_000_000,
-                        max_open_orders = 64,
+    @testset "Queue fills never exceed an exact price-time oracle (randomized)" begin
+        @test _fifo_oracle([(:add, :bid, 100, 10), (:join, :bid, 100, 5, 1), (:trade, :sell, 100, 12)]) ==
+              Dict(1 => 2)
+        @test _fifo_oracle([
+            (:join, :bid, 100, 5, 1),
+            (:add, :bid, 100, 10),
+            (:join, :bid, 100, 5, 2),
+            (:trade, :sell, 100, 8),
+            (:trade, :sell, 100, 3),
+        ]) == Dict(1 => 5)
+        # Price priority across levels, both sides.
+        @test _fifo_oracle([(:join, :bid, 100, 5, 1), (:join, :bid, 101, 5, 2), (:trade, :sell, 99, 5)]) ==
+              Dict(2 => 5)
+        @test _fifo_oracle([(:join, :ask, 103, 5, 1), (:join, :ask, 102, 5, 2), (:trade, :buy, 104, 5)]) ==
+              Dict(2 => 5)
+        limits = RiskLimits(
+            max_order_lots = 100,
+            max_inventory_lots = 10_000,
+            max_initial_cash_subunits = 100_000_000,
+            max_open_orders = 64,
+        )
+        for (mode, seed) in ((:back, UInt64(0)), (:random, UInt64(0x5eed)))
+            exceeded = Tuple{Int, Int, Int64, Int64}[]
+            total_sim = Int64(0)
+            total_oracle = Int64(0)
+            cases_with_fills = 0
+            multi_level = 0
+            reconciled = true
+            for case in 1:300
+                events, joins, script = _random_queue_case(case)
+                result = simulate!(
+                    PaperPortfolio(_SIM_INSTRUMENT, 100_000_000; mode = :signed),
+                    _session(events),
+                    _at_sequence(joins);
+                    config = _config(
+                        1;
+                        limits = limits,
+                        fill_model = L2QueueApproximation(queue_position = mode, seed = seed),
                     ),
-                ),
+                )
+                @test all(o -> o.status != :rejected, result.orders)
+                expected = _fifo_oracle(script; queue_position = mode, seed = seed)
+                simulated = Dict{Int, Int64}()
+                for fill in result.fills
+                    simulated[fill.order_id] = get(simulated, fill.order_id, 0) + fill.qty_lots
+                end
+                for (id, lots) in simulated
+                    lots <= get(expected, id, 0) ||
+                        push!(exceeded, (case, id, lots, get(expected, id, 0)))
+                end
+                isempty(simulated) || (cases_with_fills += 1)
+                length(unique(f.price_ticks for f in result.fills)) > 1 && (multi_level += 1)
+                total_sim += sum(values(simulated); init = 0)
+                total_oracle += sum(values(expected); init = 0)
+                reconciled &= isempty(reconciliation_errors(result))
+            end
+            @info "price-time oracle comparison" mode cases_with_fills multi_level total_sim total_oracle length(
+                exceeded,
             )
-            expected = _fifo_oracle(script)
-            simulated = Dict{Int, Int64}()
-            for fill in result.fills
-                simulated[fill.order_id] = get(simulated, fill.order_id, 0) + fill.qty_lots
-            end
-            for (order_id, lots) in simulated
-                lots <= get(expected, order_id, 0) ||
-                    push!(exceeded, (seed, order_id, lots, get(expected, order_id, 0)))
-            end
-            isempty(simulated) || (cases_with_fills += 1)
-            total_sim += sum(values(simulated); init = 0)
-            total_oracle += sum(values(expected); init = 0)
-            @test isempty(reconciliation_errors(result))
+            isempty(exceeded) || @info "simulator over-filled vs oracle" mode first(exceeded, 5)
+            @test isempty(exceeded)
+            @test reconciled
+            # Not vacuous: many cases fill, many at more than one price, and in aggregate the
+            # declared rules fill no more than exact price-time priority.
+            @test cases_with_fills >= 100
+            @test multi_level >= 50
+            @test total_sim <= total_oracle
         end
-        @info "FIFO oracle comparison" cases_with_fills total_sim total_oracle length(exceeded)
-        isempty(exceeded) || @info "simulator over-filled vs FIFO oracle" first(exceeded, 5)
-        @test isempty(exceeded)
-        # The comparison is not vacuous: many cases fill, and the declared conservative
-        # rules fill no more than exact FIFO in aggregate.
-        @test cases_with_fills >= 100
-        @test total_sim <= total_oracle
+    end
+
+    @testset "Leakage 9: prints and quote-throughs respect price priority across levels" begin
+        # Buy A rests at 100 (join 1), buy B at 101 (join 2), no venue ahead at either.
+        # A sell print at 99 x5 is strictly through both: price-time priority gives B the
+        # 5 lots at 101 and A nothing. (At 258b295 A filled 5 at 100 and B 0.)
+        bids = MarketEvent[
+            _bd(1, 100, Bid, 98, 1),
+            _bd(2, 100, Ask, 103, 10),
+            _bd(3, 200, Bid, 98, 1),
+            _tp(4, 300, Sell, 99, 5),
+            _bd(5, 400, Bid, 98, 1),
+        ]
+        buys = Dict{Int, Any}(2 => OrderIntent(Buy, 5, 100), 3 => OrderIntent(Buy, 5, 101))
+        result = simulate!(_portfolio(), _session(bids), _at_sequence(buys); config = _config(10))
+        @test [(f.order_id, f.price_ticks, f.qty_lots) for f in result.fills] == [(2, 101, 5)]
+        @test result.orders[1].filled_lots == 0
+        @test isempty(reconciliation_errors(result))
+        # Sell-side mirror: sell A at 103 (join 1), sell B at 102 (join 2); buy print at 104.
+        asks = MarketEvent[
+            _bd(1, 100, Bid, 98, 10),
+            _bd(2, 100, Ask, 105, 1),
+            _bd(3, 200, Ask, 105, 1),
+            _tp(4, 300, Buy, 104, 5),
+            _bd(5, 400, Ask, 105, 1),
+        ]
+        sells = Dict{Int, Any}(2 => OrderIntent(Sell, 5, 103), 3 => OrderIntent(Sell, 5, 102))
+        mirror = simulate!(
+            _portfolio(mode = :signed),
+            _session(asks),
+            _at_sequence(sells);
+            config = _config(10),
+        )
+        @test [(f.order_id, f.price_ticks, f.qty_lots) for f in mirror.fills] == [(2, 102, 5)]
+        # Quote-through across two resting bids: new ask at 99 x5 fills B at 101 first.
+        through_quote = MarketEvent[
+            _bd(1, 100, Bid, 98, 1),
+            _bd(2, 100, Ask, 103, 10),
+            _bd(3, 200, Bid, 98, 1),
+            _bd(4, 300, Bid, 98, -1),
+            _bd(5, 300, Ask, 103, -10),
+            _bd(6, 300, Ask, 99, 5),
+            _bd(7, 400, Bid, 97, 1),
+        ]
+        crossed = simulate!(_portfolio(), _session(through_quote), _at_sequence(buys); config = _config(10))
+        @test [(f.order_id, f.price_ticks, f.qty_lots, f.trigger) for f in crossed.fills] ==
+              [(2, 101, 5, :quote_through)]
+    end
+
+    @testset "Orders activating after the last replayed event never fill" begin
+        events = vcat(_base_events(), MarketEvent[_bd(3, 200, Bid, 100, 1)])
+        # Decided at the last event (t = 200) with L = 50: activation at 250 has no book.
+        result = simulate!(
+            _portfolio(),
+            _session(events),
+            _at_sequence(3, OrderIntent(Buy, 2, 102; time_in_force = :ioc));
+            config = _config(50),
+        )
+        @test isempty(result.fills)
+        @test only(result.orders).status == :expired
+        @test only(result.orders).terminal_reason == "activation_after_session_end"
+        @test any(row -> row.kind == :non_fill, result.audit)
+        # Control: the same order decided one event earlier activates in-session and fills.
+        early = simulate!(
+            _portfolio(),
+            _session(events),
+            _at_sequence(2, OrderIntent(Buy, 2, 102; time_in_force = :ioc));
+            config = _config(50),
+        )
+        @test only(early.fills).exchange_ts_ns == 150
+    end
+
+    @testset "Mutating ctx.snapshot cannot change later features or results" begin
+        session = load_session_jsonl(joinpath(@__DIR__, "fixtures", "book_session.jsonl"))
+        function run(mutate::Bool)
+            features = Any[]
+            decide = ctx -> begin
+                push!(features, ctx.features)
+                if mutate && !isempty(ctx.snapshot.bids)
+                    ctx.snapshot.bids[1] = 1 => 999_999
+                    empty!(ctx.snapshot.asks)
+                end
+                nothing
+            end
+            result = simulate!(
+                PaperPortfolio(session.instrument, 1_000),
+                session,
+                decide;
+                config = _config(0),
+            )
+            return features, result
+        end
+        clean_features, clean = run(false)
+        dirty_features, dirty = run(true)
+        @test dirty_features == clean_features
+        @test dirty.result_hash == clean.result_hash
     end
 
     @testset "Leakage 4: fees and slippage are applied exactly once" begin
@@ -875,6 +1107,32 @@ end
             config = _config(0),
         )
         @test (portfolio.cash_subunits, length(portfolio.audit)) == before
+        # Pinned limit of the best-effort scan (documented as 4 levels, counting the
+        # closure's capture field as level 1): a label 4 levels down is caught, 5 is not.
+        # The structural guarantee above does not depend on the scan.
+        depth4 = (a = (b = (c = first(labels),),),)
+        depth5 = (a = (b = (c = (d = first(labels),),),),)
+        @test_throws ArgumentError simulate!(
+            _portfolio(),
+            _session(events),
+            ctx -> (depth4; nothing);
+            config = _config(0),
+        )
+        @test simulate!(
+            _portfolio(),
+            _session(events),
+            ctx -> (depth5; nothing);
+            config = _config(0),
+        ) isa SimulationResult
+        @test DendriteTrader.Simulation._LABEL_SCAN_DEPTH == 4
+        # Labels stored as isbits arrays/tuples are inspected too.
+        packed = [first(labels)]
+        @test_throws ArgumentError simulate!(
+            _portfolio(),
+            _session(events),
+            ctx -> (packed; nothing);
+            config = _config(0),
+        )
         struct_peeker = (labels = Dict(1 => first(labels)),)
         @test_throws ArgumentError simulate!(
             portfolio,
@@ -1223,6 +1481,31 @@ end
         @test only(fills)["decision_id"] == only(decisions)["decision_id"]
         roundtrip = JSON.parse(JSON.json(fills))
         @test roundtrip[1]["exchange_ts_ns"] == 110
+        # The documented hash is reproducible from the public result for a real instrument.
+        @test result.instrument == _SIM_INSTRUMENT
+        payload = DendriteTrader.Simulation._canonical_payload(
+            result.assumptions,
+            result.decisions,
+            result.orders,
+            result.fills,
+            result.ledger,
+            result.audit,
+            result.metrics,
+            result.instrument,
+        )
+        @test occursin("\"instrument\":\"$(_SIM_INSTRUMENT)\"", payload)
+        public = DendriteTrader.Simulation.canonical_json(
+            Dict{String, Any}(
+                "assumptions" => result.assumptions,
+                "decisions" => decision_records(result),
+                "orders" => [DendriteTrader.Simulation._order_dict(o) for o in result.orders],
+                "fills" => fill_records(result),
+                "ledger" => [DendriteTrader.Simulation._ledger_dict(p) for p in result.ledger],
+                "audit" => [audit_dict(row) for row in result.audit],
+                "metrics" => DendriteTrader.Simulation._metrics_dict(result.metrics),
+            ),
+        )
+        @test bytes2hex(sha256(public)) == result.result_hash
     end
 
     @testset "metabolic-ledger parity.v1 golden fixtures (vendored)" begin
@@ -1302,6 +1585,8 @@ end
         @test !signed.in_parity_subset
         @test signed.assumptions["accounting"]["parity_subset"] == false
         @test_throws PortfolioError parity_document(signed, "signed")
+        @test_throws PortfolioError parity_document(long_flat, "bad_mark"; mark_price_ticks = 0)
+        @test_throws PortfolioError parity_document(long_flat, "bad_mark"; mark_price_ticks = -5)
         @test isempty(reconciliation_errors(signed))
         # Flip accounting: buy 4 @ 100, sell 6 @ 110 with fee 6 split 4 / 2 across legs.
         p = PaperPortfolio(_SIM_INSTRUMENT, 10_000; mode = :signed)

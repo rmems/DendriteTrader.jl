@@ -257,6 +257,8 @@ function parity_document(
         "audit" => [audit_dict(row) for row in result.audit],
     )
     if mark_price_ticks !== nothing
+        mark_price_ticks > 0 ||
+            _fail(:malformed_input, "parity documents require a positive mark_price_ticks")
         expected["unrealized_pnl_subunits"] =
             final.inventory_lots == 0 ? 0 :
             Int64(

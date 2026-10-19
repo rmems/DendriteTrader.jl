@@ -84,7 +84,8 @@ SimulationConfig(;
 Everything a decision function may read. It is built only from events observable at
 `decision_ts_ns` under the feed-delay model and from fills already *reported*
 (`fill time + report_ns <= decision_ts_ns`). It carries no label, target or outcome;
-reading any other property throws. `snapshot` is a private copy of the observed book.
+reading any other property throws. `snapshot` is a fresh copy made for this call only;
+the simulator keeps its own copy, so mutating it cannot affect later features or fills.
 `features` is the causal `microstructure_features` row for the observed snapshot, or
 `nothing` while the observed book is one-sided.
 """
@@ -112,6 +113,8 @@ function Base.getproperty(ctx::DecisionContext, name::Symbol)
     return getfield(ctx, name)
 end
 
+const _LABEL_SCAN_DEPTH = 4
+
 _is_label_type(T) = T <: MovementTarget || (T <: AbstractArray && eltype(T) <: MovementTarget)
 
 function _scan_label_capture(x, depth::Int)
@@ -126,7 +129,9 @@ function _scan_label_capture(x, depth::Int)
     elseif x isa AbstractDict
         return any(value -> _scan_label_capture(value, depth - 1), values(x))
     elseif x isa Union{AbstractArray, Tuple, NamedTuple}
-        isbitstype(eltype(x)) && return false
+        # Only plain numeric arrays are skipped; isbits element types such as a
+        # MovementTarget (or tuples of them) must still be inspected.
+        x isa AbstractArray{<:Union{Number, Bool, Char}} && return false
         for index in eachindex(x)
             x isa AbstractArray && !isassigned(x, index) && continue
             _scan_label_capture(x[index], depth - 1) && return true
@@ -142,12 +147,14 @@ function _scan_label_capture(x, depth::Int)
 end
 
 """
-Runtime guard: reject a decision function (closure or callable struct) that captures
-`MovementTarget` labels. This is a guard against accidental capture, not a sandbox;
-the structural guarantee is that `DecisionContext` exposes no label/outcome data.
+Best-effort runtime guard: reject a decision function (closure or callable struct) that
+captures `MovementTarget` labels within `_LABEL_SCAN_DEPTH` (4) nested levels, counting
+the closure's captured variable as level 1. It does
+not see globals or deeper nesting and is not a sandbox. The hard guarantee is
+structural: `DecisionContext` has no label, target or outcome fields.
 """
 function _assert_label_free(decide)
-    _scan_label_capture(decide, 4) && throw(
+    _scan_label_capture(decide, _LABEL_SCAN_DEPTH) && throw(
         ArgumentError(
             "decision function captures MovementTarget labels; future outcomes must not " *
             "be reachable from the decision path",
@@ -494,13 +501,18 @@ function _activate!(state::_SimState, order::PaperOrder, ts::Int64)
     # Venue size at the level in the simulated world: displayed size plus print volume
     # earlier simulated orders absorbed here (the data shows those venue lots as traded,
     # but with our orders present they would still be resting ahead).
-    displayed =
-        _effective_size(book, state.depletion, own, intent.limit_price_ticks) +
-        get(state.absorbed, (own, intent.limit_price_ticks), Int64(0))
+    displayed = _simulated_venue(state, own, intent.limit_price_ticks)
     ahead = if model.queue_position == :back
         displayed
     else
-        Int64(_splitmix64(model.seed ⊻ UInt64(order.order_id)) % UInt64(displayed + 1))
+        # Seeded draw, but never ahead of the venue lots that already sit in front of an
+        # earlier simulated order at this level (our own orders keep time priority).
+        draw = Int64(_splitmix64(model.seed ⊻ UInt64(order.order_id)) % UInt64(displayed + 1))
+        earlier = [
+            o.queue_ahead_lots for o in _resting_orders(state) if
+            o.intent.side == intent.side && o.intent.limit_price_ticks == intent.limit_price_ticks
+        ]
+        max(draw, maximum(earlier; init = Int64(0)))
     end
     state.join_counter += 1
     order.join_seq = state.join_counter
@@ -531,7 +543,8 @@ function _on_book_delta!(state::_SimState, event::BookDelta)
     levels = _levels(state.venue, event.side)
     displayed = get(levels, event.price_ticks, Int64(0))
     displayed == 0 && delete!(state.depletion, (event.side, event.price_ticks))
-    for order in _resting_orders(state)
+    # Quote-through liquidity goes to better-priced resting orders first (price-time).
+    for order in sort!(_resting_orders(state); by = _priority)
         intent = order.intent
         if event.side == _own_book_side(intent.side) &&
            event.price_ticks == intent.limit_price_ticks
@@ -539,7 +552,7 @@ function _on_book_delta!(state::_SimState, event::BookDelta)
             # that joined earlier stay ahead until they fill or are cancelled.
             # The cap uses simulated-world venue size (displayed + absorbed print volume),
             # so a data decrease caused by a print our orders absorbed is not counted twice.
-            simulated_venue = displayed + get(state.absorbed, (event.side, event.price_ticks), 0)
+            simulated_venue = _simulated_venue(state, event.side, event.price_ticks)
             event.size_delta < 0 &&
                 (order.queue_ahead_lots = min(order.queue_ahead_lots, simulated_venue))
         elseif event.size_delta > 0 &&
@@ -565,49 +578,98 @@ function _on_book_delta!(state::_SimState, event::BookDelta)
     return nothing
 end
 
+# Price-time priority key for resting orders: better limit first, then FIFO join order.
+_priority(order::PaperOrder) = (
+    order.intent.side == Buy ? -order.intent.limit_price_ticks : order.intent.limit_price_ticks,
+    order.join_seq,
+)
+
+# Estimated venue lots resting at a level in the simulated world: displayed size (net of
+# our own taker depletion) plus print volume our orders absorbed there.
+_simulated_venue(state::_SimState, side::BookSide, price::Int64) = max(
+    Int64(0),
+    _effective_size(state.venue, state.depletion, side, price) +
+    get(state.absorbed, (side, price), Int64(0)),
+)
+
 function _on_trade_print!(state::_SimState, event::TradePrint)
-    # FIFO per level: the print consumes the queue prefix of length `event.size`. An
-    # order's total queue ahead is its venue-ahead estimate plus the pre-print remaining
-    # size of simulated orders that joined the same level earlier. Simulated fills from
-    # one print never exceed the print size in total.
+    # The print is a budget of `event.size` lots that walks the hit side from the best
+    # price toward the print price (price priority). At each level it consumes that
+    # level's estimated FIFO queue: venue lots ahead, simulated orders in join order and
+    # venue lots behind them, so worse levels only see what is left. This is at least as
+    # conservative as exact price-time priority. Simulated fills from one print never
+    # exceed the print size in total.
+    side = event.aggressor_side == Sell ? Buy : Sell
+    book_side = _own_book_side(side)
     resting = _resting_orders(state)
-    own_ahead = Dict(order.order_id => _own_ahead(resting, order) for order in resting)
-    leftover_print = event.size
-    for order in resting
-        intent = order.intent
-        hits_order = intent.side == Buy ? event.aggressor_side == Sell : event.aggressor_side == Buy
-        hits_order || continue
-        _within_limit(intent.side, event.price_ticks, intent.limit_price_ticks) || continue
-        # A print strictly through the limit implies the whole venue queue at the limit
-        # traded; earlier simulated orders at the limit are still ahead.
-        _strictly_through(intent.side, event.price_ticks, intent.limit_price_ticks) &&
-            (order.queue_ahead_lots = 0)
-        ahead = Int128(order.queue_ahead_lots) + own_ahead[order.order_id]
-        # Earlier same-level simulated orders were processed first (FIFO), so their
-        # remaining size is already post-print. Whatever is still ahead after the print
-        # and is not one of them is venue size: subtracting the full print from the
-        # venue part would double-count lots that filled earlier simulated orders.
-        total_after = max(Int128(0), ahead - event.size)
-        own_after = _own_ahead(resting, order)
-        order.queue_ahead_lots = Int64(max(Int128(0), total_after - own_after))
-        qty = Int64(min(order.remaining_lots, max(Int128(0), event.size - ahead), leftover_print))
-        qty > 0 || continue
-        leftover_print -= qty
-        if event.price_ticks == intent.limit_price_ticks
-            level = (_own_book_side(intent.side), intent.limit_price_ticks)
-            state.absorbed[level] = get(state.absorbed, level, Int64(0)) + qty
+    hit = [
+        o for o in resting if
+        o.intent.side == side && _within_limit(side, event.price_ticks, o.intent.limit_price_ticks)
+    ]
+    prices = Set{Int64}(o.intent.limit_price_ticks for o in hit)
+    push!(prices, event.price_ticks)
+    for price in keys(_levels(state.venue, book_side))
+        _within_limit(side, event.price_ticks, price) && push!(prices, price)
+    end
+    for (level_side, price) in keys(state.absorbed)
+        level_side == book_side &&
+            _within_limit(side, event.price_ticks, price) &&
+            push!(prices, price)
+    end
+    budget = Int128(event.size)
+    # No early exit: even when better levels exhaust the print, the print-price level must
+    # still record that the data's removal of traded size did not happen in the
+    # simulated world (otherwise later orders would see too little venue size ahead).
+    for price in sort!(collect(prices); rev = side == Buy)
+        level_orders =
+            sort!([o for o in hit if o.intent.limit_price_ticks == price]; by = _priority)
+        own_before = Dict(o.order_id => _own_ahead(resting, o) for o in level_orders)
+        venue_total = _simulated_venue(state, book_side, price)
+        for order in level_orders
+            venue_total = max(venue_total, order.queue_ahead_lots)
         end
-        _record_fill!(
-            state,
-            order,
-            intent.limit_price_ticks,
-            intent.limit_price_ticks,
-            qty,
-            :maker,
-            event.exchange_ts_ns,
-            :trade_print,
-            event.sequence,
-        )
+        level_queue =
+            Int128(venue_total) + sum((o.remaining_lots for o in level_orders); init = Int64(0))
+        own_filled = Int64(0)
+        for order in level_orders
+            ahead = Int128(order.queue_ahead_lots) + own_before[order.order_id]
+            qty = Int64(min(order.remaining_lots, max(Int128(0), budget - ahead)))
+            qty > 0 || continue
+            own_filled += qty
+            _record_fill!(
+                state,
+                order,
+                price,
+                price,
+                qty,
+                :maker,
+                event.exchange_ts_ns,
+                :trade_print,
+                event.sequence,
+            )
+        end
+        # Earlier same-level orders are already post-print, so whatever is still ahead
+        # and is not one of them is venue size (never reduced twice).
+        for order in level_orders
+            _is_live(order) || continue
+            ahead = Int128(order.queue_ahead_lots) + own_before[order.order_id]
+            total_after = max(Int128(0), ahead - budget)
+            order.queue_ahead_lots =
+                Int64(max(Int128(0), total_after - _own_ahead(resting, order)))
+        end
+        # Keep simulated-world venue size = replayed displayed size + absorbed. Venue lots
+        # the simulated world traded here leave it; the replayed data is expected to remove
+        # up to the print size of displayed size, at the print price only.
+        consumed = min(budget, level_queue)
+        venue_consumed = Int64(consumed) - own_filled
+        data_removed =
+            price == event.price_ticks ?
+            min(event.size, _effective_size(state.venue, state.depletion, book_side, price)) :
+            Int64(0)
+        key = (book_side, price)
+        state.absorbed[key] = get(state.absorbed, key, Int64(0)) + data_removed - venue_consumed
+        state.absorbed[key] == 0 && delete!(state.absorbed, key)
+        budget -= consumed
     end
     return nothing
 end
@@ -786,12 +848,22 @@ function _observe!(state::_SimState, session::ReplaySession, event::MarketEvent,
         state.last_complete_observed = snap
     end
     inventory, cash, views = _reported_view(state, ts)
+    # `snap` is retained as feature history; decide gets its own copy of the vectors so a
+    # mutating decision function cannot alter later features or results.
     ctx = DecisionContext(
         ts,
         event.sequence,
         event.exchange_ts_ns,
         event,
-        snap,
+        BookSnapshot(
+            snap.venue,
+            snap.instrument,
+            snap.exchange_ts_ns,
+            snap.receive_ts_ns,
+            snap.sequence,
+            copy(snap.bids),
+            copy(snap.asks),
+        ),
         features,
         inventory,
         cash,
@@ -1025,7 +1097,19 @@ function simulate!(
         elseif kind == :action
             action = popfirst!(state.actions)
             order = state.orders[action.order_id]
-            if action.rank == _RANK_ACTIVATION
+            if action.rank == _RANK_ACTIVATION && venue_index > n
+                # No venue event is left at or after the activation time, so there is no
+                # observed book state to trade against; the order never becomes active.
+                _is_live(order) && _terminate!(
+                    state,
+                    order,
+                    :expired,
+                    :non_fill,
+                    ts,
+                    "activation_after_session_end",
+                )
+                _mark_point!(state, ts, :activation, order.order_id)
+            elseif action.rank == _RANK_ACTIVATION
                 _activate!(state, order, ts)
                 _mark_point!(state, ts, :activation, order.order_id)
             else
@@ -1057,6 +1141,7 @@ function simulate!(
         state.ledger,
         working.audit,
         metrics,
+        working.instrument,
     )
     digest = bytes2hex(sha256(payload))
     result = SimulationResult(

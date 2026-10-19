@@ -150,10 +150,18 @@ decision became observable (`info_available_ts_ns`, from the feed-delay model â€
 activation). Cancels take effect after `cancel_ns`, and fills become visible to the
 decision function only after `report_ns`.
 
-`decide(ctx::DecisionContext)` sees only the observed book snapshot, the causal
-`microstructure_features` row for it, reported inventory/cash, and reported working
-orders. The context exposes no label, target, or outcome property, and a decision
-closure that captures `MovementTarget` values is refused before the run starts.
+`decide(ctx::DecisionContext)` sees only: the decision time; the newest observable
+event (`event`, its `info_sequence` and `info_exchange_ts_ns`); a private copy of the
+observed book snapshot; the causal `microstructure_features` row for it; reported
+inventory and cash; and reported working orders. Mutating `ctx.snapshot` cannot change
+later features or fills.
+
+The hard guarantee against label leakage is structural: `DecisionContext` has no label,
+target, or outcome fields, and reading any other property throws. In addition, a
+best-effort runtime scan refuses a decision closure or callable struct that captures
+`MovementTarget` values within 4 nested levels (the closure's captured variable is
+level 1). The scan does not see globals or deeper
+nesting; it is a guard against accidental capture, not a sandbox.
 `ForecastPolicy` is a minimal example that wires a fitted Task 4 forecast model into
 long/flat IOC orders; it is not a strategy claim.
 
@@ -161,9 +169,14 @@ long/flat IOC orders; it is not a strategy claim.
 hftbacktest order-fill documentation). Its rules are copied into
 `SimulationResult.assumptions`: marketable orders sweep displayed liquidity within
 the limit; consumed displayed liquidity is not reused; resting orders join the back
-of their level (or a seeded position with `queue_position = :random`); only prints at
-the order's price advance the queue; trade-throughs and quote-throughs fill resting
-orders; and there is no market impact or matching-engine guarantee.
+of their level (or a seeded position with `queue_position = :random`, never ahead of an
+earlier simulated order at that level); prints at the order's price advance the queue,
+and a displayed-size decrease advances it only when the level becomes smaller than the
+venue size still ahead; simulated orders at one level are first-in, first-out by join
+order; a print walks the hit side from the best price to the print price, filling
+better-priced queues first; quote-throughs fill better-priced resting orders first;
+orders whose activation falls after the last replayed event expire unfilled; and there
+is no market impact or matching-engine guarantee.
 
 `FeeSchedule` applies one integer fee per fill (positive commission, negative rebate,
 parts-per-million of notional, commissions rounded up). Declared taker slippage is in

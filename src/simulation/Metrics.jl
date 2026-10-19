@@ -24,12 +24,18 @@ function _metrics(state)
         filled_lots,
         accepted_lots,
         accepted_lots == 0 ? 0.0 : filled_lots / accepted_lots,
-        sum(
-            (notional_subunits(p.scale, f.price_ticks, f.qty_lots) for f in fills);
-            init = Int64(0),
+        _checked_i64(
+            sum(
+                (Int128(notional_subunits(p.scale, f.price_ticks, f.qty_lots)) for f in fills);
+                init = Int128(0),
+            ),
+            "turnover",
         ),
         p.fees_subunits,
-        sum((f.slippage_subunits for f in fills); init = Int64(0)),
+        _checked_i64(
+            sum((Int128(f.slippage_subunits) for f in fills); init = Int128(0)),
+            "slippage",
+        ),
         p.realized_pnl_subunits,
         p.inventory_lots,
         final.mark_price_ticks,
@@ -174,7 +180,16 @@ _canon(io::IO, x::Symbol) = JSON.print(io, String(x))
 """Canonical (key-sorted, compact) JSON string of a JSON-like value."""
 canonical_json(x) = sprint(_canon, x)
 
-function _canonical_payload(assumptions, decisions, orders, fills, ledger, audit, metrics)
+function _canonical_payload(
+    assumptions,
+    decisions,
+    orders,
+    fills,
+    ledger,
+    audit,
+    metrics,
+    instrument::AbstractString,
+)
     shell = SimulationResult(
         assumptions,
         decisions,
@@ -187,7 +202,7 @@ function _canonical_payload(assumptions, decisions, orders, fills, ledger, audit
         0,
         0,
         0,
-        "",
+        String(instrument),
         ParityScale(),
         "",
     )
@@ -221,6 +236,10 @@ function reconciliation_errors(result::SimulationResult)
     applied = 0
     for point in result.ledger
         point.fills_applied >= applied || push!(errors, "step $(point.step): fill count decreased")
+        point.fills_applied <= length(result.fills) || push!(
+            errors,
+            "step $(point.step): fills_applied $(point.fills_applied) exceeds $(length(result.fills)) fills",
+        )
         while applied < min(point.fills_applied, length(result.fills))
             applied += 1
             fill = result.fills[applied]
@@ -253,6 +272,12 @@ function reconciliation_errors(result::SimulationResult)
                 push!(errors, "step $(point.step): unrealized PnL without a mark")
             point.equity_subunits === nothing ||
                 push!(errors, "step $(point.step): equity without a mark")
+            # The simulator leaves peak unchanged and reports zero drawdown when equity is
+            # unknown; check that instead of skipping the step.
+            point.peak_equity_subunits == peak ||
+                push!(errors, "step $(point.step): peak changed without a mark")
+            point.drawdown_subunits == 0 ||
+                push!(errors, "step $(point.step): drawdown without a mark")
             continue
         else
             mark_value = Int128(point.mark_price_ticks) * point.inventory_lots ÷ scale.qty_scale

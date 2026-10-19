@@ -19,9 +19,10 @@ struct FeeSchedule
         taker_fee_ppm::Integer = 0,
         per_fill_fee_subunits::Integer = 0,
     )
-        abs(maker_fee_ppm) <= 1_000_000 ||
+        # Explicit bounds on the original integer: `abs(typemin(Int64))` overflows.
+        -1_000_000 <= maker_fee_ppm <= 1_000_000 ||
             throw(ArgumentError("maker_fee_ppm must be within ±1_000_000"))
-        abs(taker_fee_ppm) <= 1_000_000 ||
+        -1_000_000 <= taker_fee_ppm <= 1_000_000 ||
             throw(ArgumentError("taker_fee_ppm must be within ±1_000_000"))
         0 <= per_fill_fee_subunits <= typemax(Int32) ||
             throw(ArgumentError("per_fill_fee_subunits must be non-negative"))
@@ -73,9 +74,14 @@ Assumptions, all recorded in `SimulationResult.assumptions`:
    is treated as venue size that would still be resting (no market impact), both when
    later orders join and when capping on displayed-size decreases. A print fills only
    the size left after the queue.
-6. Trade-through: a print strictly through the limit fills up to the print size.
+6. Price priority: a print walks the hit side from the best price down to the print
+   price. At each level it consumes that level's whole estimated queue (venue lots and
+   simulated orders in FIFO order, including venue lots our orders absorbed earlier)
+   before reaching worse levels. A print strictly through a resting limit can therefore
+   fill it only after better-priced and earlier-queued size is used up.
 7. Quote-through: opposite displayed liquidity appearing strictly through a resting
-   limit fills it as maker at the limit price, up to that displayed size. A locked
+   limit fills it as maker at the limit price, up to that displayed size, better-priced
+   resting orders first, then join order. A locked
    quote (equal price) does not fill.
 8. No market impact: hypothetical fills do not alter the replayed book beyond the
    depletion bookkeeping above. No matching-engine guarantee is implied.
@@ -107,8 +113,8 @@ const _FILL_ASSUMPTIONS = (
     "queue advances only on prints at the order price, or when the level shrinks below it",
     "simulated orders at one level are FIFO by join order; venue cancels never skip them",
     "print volume absorbed by simulated orders stays as resting venue size at that level",
-    "a print strictly through a resting limit fills up to the print size",
-    "displayed liquidity strictly through a resting limit fills it as maker at the limit",
+    "prints walk the hit side best price first; each level's whole FIFO queue is consumed first",
+    "displayed liquidity strictly through a resting limit fills it as maker at the limit, best price first",
     "a locked quote at the resting limit does not fill",
     "no market impact; no venue matching-engine guarantee",
 )
