@@ -78,19 +78,18 @@ Run from the repository root. Verified on a fresh shallow clone at commit `9d1cb
 | Full test suite | `julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'` | Passes: 571 pass, 0 fail, 0 error, 0 broken (~250 s cold, mostly precompilation) |
 | Fast test loop | `julia --startup-file=no --project=. test/runtests.jl` | Passes (~28 s warm) |
 | Docs build | `julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'` then `julia --project=docs docs/make.jl` | Builds. The first command rewrites `docs/Project.toml` with a local path source; do not commit that |
-| Format (non-mutating) | `julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.add("JuliaFormatter"); using JuliaFormatter; exit(format("."; overwrite=false) ? 0 : 1)'` | **Fails** (exit 1): `src/features/Labels.jl`, `src/market/Replay.jl`, `test/leakage.jl` are not formatted |
+| Format (non-mutating) | `julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.add(name="JuliaFormatter", version="2"); using JuliaFormatter; exit(format("."; overwrite=false) ? 0 : 1)'` | Passes (exit 0) after #107, which reformatted `src/features/Labels.jl`, `src/market/Replay.jl`, `test/leakage.jl`; at `9d1cb2e` it failed on those three. Same check the CI `JuliaFormatter` job runs |
 
 Notes:
 
 - The dYdX integration testset in `test/integration/test_dydx.jl` is included by
   `test/runtests.jl` but returns early (0 tests) unless `DYDX_INTEGRATION=true`. It calls
   the public dYdX v4 testnet indexer. Do not enable it casually.
-- **The format command in `AGENTS.md` and `ci.yml` is not a check.** With JuliaFormatter
-  2.x, `format(".", check=true)` logs `ignoring invalid formatting options: check`,
-  reformats files in place, and exits 0. Locally it also adds JuliaFormatter to
-  `Project.toml`. Use the non-mutating command above. Only run the `AGENTS.md` version
-  on a clean worktree (commit or `git stash` first): `git checkout -- Project.toml src test`
-  then reverts its edits, but it also discards any other uncommitted changes in those paths.
+- CI (`ci.yml` `JuliaFormatter` job) and `AGENTS.md` run the non-mutating check above, pinned
+  to JuliaFormatter 2.x in a temporary environment, so `Project.toml` is not modified. Do not
+  use `format(".", check=true)`: JuliaFormatter 2.x ignores `check`, reformats in place and exits 0.
+- The `AGENTS.md` "apply formatting" command (`format(".")`) rewrites files in place. Run it only on
+  a clean worktree (commit first) so formatter edits are not mixed with other uncommitted changes.
 - `Manifest.toml` is gitignored. Never commit it, a modified `Project.toml` from
   `Pkg.add`, or a modified `docs/Project.toml`.
 
