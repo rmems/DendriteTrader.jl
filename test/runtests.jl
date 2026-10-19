@@ -419,6 +419,13 @@ include("spikes.jl")
         @test !haskey(engine.positions, "MARKET-D")
         @test !haskey(engine.last_prices, "MARKET-D")
 
+        # The hard cap itself must be finite and positive: a NaN cap would make
+        # `units > cap` false and let any Kelly size through.
+        for bad_cap in (NaN, Inf, -Inf, 0.0, -1.0)
+            @test_throws ArgumentError ExecutionEngine(max_position_size = bad_cap)
+        end
+        @test_throws ArgumentError run_backtest(BacktestConfig(max_position_size = NaN), [sig])
+
         # Units exactly at the cap are accepted (the cap is inclusive).
         at_cap = ExecutionEngine(max_position_size = k_model.units)
         dec_at = execute_signal!(at_cap, sig, 10_000.0)
@@ -481,6 +488,21 @@ include("spikes.jl")
         bad_close = execute_signal!(close_engine, bad_price_sig, 0.0; position_units_override = 5.0)
         @test !bad_close.executed
         @test startswith(bad_close.reason, "invalid_sizing_input:")
+        # The carve-out still validates confidence as size_position would. Confidence
+        # above 1 passes the gate, so it reaches the sizing check.
+        bad_conf_sig = TradeSignal("MARKET-D", Buy, 90.0, 1.0, 1.5f0, 0)
+        bc = execute_signal!(close_engine, bad_conf_sig, 0.0; position_units_override = 5.0)
+        @test !bc.executed
+        @test startswith(bc.reason, "invalid_sizing_input:")
+        @test occursin("confidence", bc.reason)
+        @test close_engine.events[end].event_type == "sizing_reject"
+        # Negative or NaN confidence never reaches sizing: the gate rejects it first.
+        for gated_conf in (-0.1f0, NaN32)
+            gated = TradeSignal("MARKET-D", Buy, 90.0, 1.0, gated_conf, 0)
+            g = execute_signal!(close_engine, gated, 0.0; position_units_override = 5.0)
+            @test !g.executed
+            @test close_engine.events[end].event_type == "gate_reject"
+        end
         # The carve-out covers finite balances only: a non-finite balance is rejected
         # even with an override.
         for nonfinite in (-Inf, Inf, NaN)

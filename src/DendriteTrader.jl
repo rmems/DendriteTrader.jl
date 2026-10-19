@@ -546,7 +546,8 @@ Stateful execution engine with confidence gating and position management.
 
 # Fields
 - `confidence_threshold`: minimum SNN confidence to execute (default 0.85)
-- `max_position_size`:    hard cap on position units (default 10.0). Kelly-sized
+- `max_position_size`:    hard cap on position units (default 10.0); must be finite
+                          and positive (the constructor throws `ArgumentError`). Kelly-sized
                           units above the cap are rejected (`max_position_reject`),
                           not shrunk to the cap.
 - `max_portfolio_exposure`: cap on total gross notional exposure in price
@@ -643,6 +644,13 @@ function ExecutionEngine(;
     log_file::Union{String, Nothing} = nothing,
     truncate::Bool = false,
 )
+    # A NaN cap would make `units > max_position_size` false and silently disable the
+    # hard cap; Inf would mean "no cap" for a field documented as a hard cap.
+    (isfinite(max_position_size) && max_position_size > 0.0) || throw(
+        ArgumentError(
+            "max_position_size must be finite and positive, got $(repr(max_position_size))",
+        ),
+    )
     (isfinite(max_portfolio_exposure) || isinf(max_portfolio_exposure)) &&
     max_portfolio_exposure > 0.0 || throw(
         ArgumentError(
@@ -745,7 +753,8 @@ An invalid `position_units_override` (non-finite, negative, or above
 `max_position_size`) is a caller error and throws `ArgumentError`. When an override
 is supplied and `account_balance` is finite but `<= 0`, Kelly sizing is skipped (the
 override quantity does not depend on it) so an existing position can still be closed;
-the price is still validated and the reported `kelly_fraction` is `0.0`. The carve-out
+price and confidence are still validated (as in `size_position`) and the reported
+`kelly_fraction` is `0.0`. The carve-out
 covers a finite balance `<= 0` only: a non-finite balance (`NaN`, `±Inf`) means the
 accounting is already broken and is rejected as `sizing_reject` even with an override.
 
@@ -805,14 +814,20 @@ function execute_signal!(
     #
     # Exception: an explicit-fill override (e.g. a simulator closing an open position)
     # does not use the Kelly size, so it may proceed when the account balance is
-    # finite but non-positive. The price is still validated, and the reported Kelly
+    # finite but non-positive. Price and confidence are still validated, and the reported Kelly
     # fraction is 0.0 because no Kelly size was computed.
     sizing_error = nothing
     kelly = 0.0
     kelly_units = 0.0
     if position_units_override !== nothing && isfinite(account_balance) && account_balance <= 0.0
-        price_ok = isfinite(signal.price) && signal.price > 0.0
-        price_ok || (sizing_error = "price must be finite and positive, got $(repr(signal.price))")
+        # Same price and confidence validation as `size_position`; only the balance check
+        # (which Kelly sizing needs and the override does not) is skipped.
+        conf = Float64(signal.confidence)
+        if !(isfinite(signal.price) && signal.price > 0.0)
+            sizing_error = "price must be finite and positive, got $(repr(signal.price))"
+        elseif !(isfinite(conf) && 0.0 <= conf <= 1.0)
+            sizing_error = "confidence must be a finite probability in [0, 1], got $(repr(conf))"
+        end
     else
         try
             position = size_position(

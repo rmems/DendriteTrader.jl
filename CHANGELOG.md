@@ -41,6 +41,9 @@ explicit reason, never silently clamped or coerced. Public signatures are unchan
 - `half_kelly` (and `from_confidence`, which delegates to it) throws `ArgumentError` when
   `p` is outside `[0, 1]` or non-finite, or `b` is non-positive or non-finite (previously
   clamped and floored at `1e-9`). The `[0, 1]` output cap is unchanged.
+- `ExecutionEngine` throws `ArgumentError` when `max_position_size` is not finite and
+  positive. A `NaN` cap previously disabled the hard cap, because `units > NaN` is false.
+  `load_config` already rejected non-positive values from files.
 - `run_backtest` inherits the engine change: with the default `BacktestConfig`
   (`max_position_size = 10.0`), entries whose Kelly size exceeds 10 units are now
   rejected rather than opened at 10 units.
