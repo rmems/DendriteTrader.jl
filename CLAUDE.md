@@ -80,8 +80,9 @@ Notes:
 - **The format command in `AGENTS.md` and `ci.yml` is not a check.** With JuliaFormatter
   2.x, `format(".", check=true)` logs `ignoring invalid formatting options: check`,
   reformats files in place, and exits 0. Locally it also adds JuliaFormatter to
-  `Project.toml`. Use the non-mutating command above. If you run the `AGENTS.md`
-  version, restore with `git checkout -- Project.toml src test`.
+  `Project.toml`. Use the non-mutating command above. Only run the `AGENTS.md` version
+  on a clean worktree (commit or `git stash` first): `git checkout -- Project.toml src test`
+  then reverts its edits, but it also discards any other uncommitted changes in those paths.
 - `Manifest.toml` is gitignored. Never commit it, a modified `Project.toml` from
   `Pkg.add`, or a modified `docs/Project.toml`.
 
