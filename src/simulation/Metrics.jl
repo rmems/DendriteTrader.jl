@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
 function _metrics(state)
+    isempty(state.ledger) &&
+        throw(ArgumentError("_metrics requires a non-empty ledger (call after session_end)"))
     orders = state.orders
     fills = state.fills
     accepted = [o for o in orders if o.status != :rejected]

@@ -154,13 +154,14 @@ Base.copy(order::PaperOrder) = PaperOrder(
 )
 
 _is_live(order::PaperOrder) = order.status == :pending || order.status == :active
-_order_ref(order_id::Integer) = "o$(order_id)"
+_order_ref(run::Integer, order_id::Integer) = "r$(run)-o$(order_id)"
 
 """
 Strategy-visible view of a working order. Fill progress is the *reported* progress:
 only fills whose report time (`exchange_ts_ns + FixedLatency.report_ns`) is at or
 before the decision time are included, so a fill cannot reveal venue state before
-the market-data feed does.
+the market-data feed does. An order (including a rejected one) leaves the view only
+once `terminal_ts_ns + report_ns` is at or before the decision time.
 """
 struct OpenOrderView
     order_id::Int64

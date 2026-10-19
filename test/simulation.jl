@@ -306,7 +306,16 @@ _base_events() = MarketEvent[_bd(1, 100, Bid, 100, 10), _bd(2, 100, Ask, 102, 10
             ),
         )
         @test seeded(7).result_hash == seeded(7).result_hash
-        @test seeded(7).assumptions["fill_model"]["seed"] == 7
+        @test seeded(7).assumptions["fill_model"]["seed"] == "7"
+        # The full 64-bit seed is recorded losslessly: seeds that differ only in the
+        # high bit, and 0 vs typemax(Int64), give distinct assumptions and hashes.
+        high = UInt64(1) << 63
+        for (left, right) in ((5, high | 5), (0, typemax(Int64)), (0, typemax(UInt64)))
+            @test seeded(left).assumptions["fill_model"]["seed"] !=
+                  seeded(right).assumptions["fill_model"]["seed"]
+            @test seeded(left).result_hash != seeded(right).result_hash
+        end
+        @test seeded(typemax(UInt64)).assumptions["fill_model"]["seed"] == "18446744073709551615"
         @test seeded(7).assumptions["fill_model"]["queue_position"] == "random"
         @test seeded(7).assumptions["fill_model"]["approximation"] == true
         @test seeded(7).result_hash != runs[1].result_hash
@@ -443,6 +452,88 @@ _base_events() = MarketEvent[_bd(1, 100, Bid, 100, 10), _bd(2, 100, Ask, 102, 10
             config = SimulationConfig(; latency = FixedLatency(10; report_ns = 50)),
         )
         @test reported == [0, 0, 0, 2]   # fill at 110 is reported at 160
+    end
+
+    @testset "Leakage 6: terminal order states are visible only after report latency" begin
+        # Two sessions that differ only in venue state at/after the activation instant.
+        # Every decision context observed before the outcome is reported must be identical.
+        latency = FixedLatency(10; report_ns = 50)
+        config = SimulationConfig(; latency = latency)
+        function views(events, actions)
+            seen = Tuple{Int64, Vector{OpenOrderView}, Int64}[]
+            decide =
+                ctx -> begin
+                    push!(
+                        seen,
+                        (ctx.decision_ts_ns, copy(ctx.open_orders), ctx.reported_inventory_lots),
+                    )
+                    get(actions, Int(ctx.info_sequence), nothing)
+                end
+            result = simulate!(_portfolio(), _session(events), decide; config = config)
+            return seen, result
+        end
+        quiet = MarketEvent[_bd(k, 100 + 5k, Bid, 90, 1) for k in 3:30]
+
+        # (a) Post-only rejected at activation because the book crossed it in (t, t+L].
+        crossed = vcat(_base_events(), MarketEvent[_bd(3, 105, Ask, 101, 5)], quiet[2:end])
+        uncrossed = vcat(_base_events(), MarketEvent[_bd(3, 105, Ask, 103, 5)], quiet[2:end])
+        actions = Dict{Int, Any}(2 => OrderIntent(Buy, 2, 101; post_only = true))
+        seen_a, result_a = views(crossed, actions)
+        seen_b, result_b = views(uncrossed, actions)
+        @test only(result_a.orders).status == :rejected
+        @test only(result_a.orders).terminal_reason == "post_only_would_take"
+        @test only(result_a.orders).terminal_ts_ns == 110
+        @test only(result_b.orders).status == :expired
+        before = [v for v in seen_a if v[1] < 160]
+        @test any(v -> 110 <= v[1] < 160, before)
+        @test before == [v for v in seen_b if v[1] < 160]
+        for (index, (ts, open_orders, _)) in enumerate(seen_a)
+            index <= 2 && continue   # contexts at and before the submitting decision
+            # Visible through [activation, activation + report_ns), gone afterwards.
+            @test (ts < 160) == any(o -> o.order_id == 1, open_orders)
+        end
+        # Sensitivity: after the report the two runs are distinguishable.
+        @test [v for v in seen_a if v[1] >= 160] != [v for v in seen_b if v[1] >= 160]
+
+        # (b) A decision-time risk reject that depends on an unreported fill.
+        limits = RiskLimits(max_inventory_lots = 6)
+        liquid = vcat(_base_events(), MarketEvent[_bd(3, 105, Bid, 90, 1)], quiet[2:end])
+        dry = vcat(
+            MarketEvent[
+                _bd(1, 100, Bid, 100, 10),
+                _bd(2, 100, Ask, 102, 10),
+                _bd(3, 105, Ask, 102, -10),
+            ],
+            quiet[2:end],
+        )
+        risk_actions = Dict{Int, Any}(
+            2 => OrderIntent(Buy, 4, 102; time_in_force = :ioc),
+            5 => OrderIntent(Buy, 4, 100),   # decided at 125, inside (110, 160)
+        )
+        function risk_views(events)
+            seen = Tuple{Int64, Vector{OpenOrderView}, Int64}[]
+            decide =
+                ctx -> begin
+                    push!(
+                        seen,
+                        (ctx.decision_ts_ns, copy(ctx.open_orders), ctx.reported_inventory_lots),
+                    )
+                    get(risk_actions, Int(ctx.info_sequence), nothing)
+                end
+            result = simulate!(
+                _portfolio(),
+                _session(events),
+                decide;
+                config = SimulationConfig(; latency = latency, limits = limits),
+            )
+            return seen, result
+        end
+        seen_l, result_l = risk_views(liquid)
+        seen_d, result_d = risk_views(dry)
+        @test result_l.decisions[2].reason == "inventory_limit"   # true inventory is 4
+        @test result_d.decisions[2].accepted                      # IOC found no liquidity
+        @test [v for v in seen_l if v[1] < 160] == [v for v in seen_d if v[1] < 160]
+        @test [v for v in seen_l if v[1] >= 175] != [v for v in seen_d if v[1] >= 175]
     end
 
     @testset "Leakage 4: fees and slippage are applied exactly once" begin
@@ -674,6 +765,42 @@ _base_events() = MarketEvent[_bd(1, 100, Bid, 100, 10), _bd(2, 100, Ask, 102, 10
         @test count(p -> p.kind == :venue_event, result.ledger) == length(events)
         @test count(p -> p.kind == :decision, result.ledger) == length(events)
         @test last(result.ledger).kind == :session_end
+    end
+
+    @testset "Repeated runs on one portfolio never alias fill ids" begin
+        events = vcat(_base_events(), MarketEvent[_bd(3, 200, Bid, 100, 1)])
+        decide = _at_sequence(2, OrderIntent(Buy, 2, 102; time_in_force = :ioc))
+        portfolio = _portfolio()
+        first_run = simulate!(portfolio, _session(events), decide; config = _config(10))
+        second_run = simulate!(portfolio, _session(events), decide; config = _config(10))
+        @test only(first_run.fills).fill_id == "r1-o1-f1"
+        @test only(second_run.fills).fill_id == "r2-o1-f1"
+        # Both runs are booked; nothing is swallowed as an idempotent replay.
+        @test portfolio.inventory_lots == 4
+        @test portfolio.cash_subunits == 100_000 - 2 * (2 * 102)
+        @test count(row -> row.idempotent_replay, portfolio.audit) == 0
+        @test portfolio.simulation_runs == 2
+        @test second_run.assumptions["run_index"] == 2
+        @test first_run.result_hash != second_run.result_hash
+        # A run that fails is not counted and does not consume a run index.
+        @test_throws ErrorException simulate!(
+            portfolio,
+            _session(events),
+            _ -> error("x");
+            config = _config(10),
+        )
+        @test portfolio.simulation_runs == 2
+        # A stale fill id already in the portfolio is a conflict, never a silent replay.
+        planted = _portfolio()
+        apply_fill!(planted, "r1-o1-f1", 110, _SIM_INSTRUMENT, Buy, 102, 2, 0)
+        cash = planted.cash_subunits
+        @test_throws PortfolioError simulate!(
+            planted,
+            _session(events),
+            decide;
+            config = _config(10),
+        )
+        @test planted.cash_subunits == cash && planted.inventory_lots == 2
     end
 
     @testset "Reject before mutation" begin

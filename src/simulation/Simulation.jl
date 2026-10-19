@@ -312,6 +312,7 @@ mutable struct _SimState
     step::Int64
     decision_counter::Int64
     last_complete_observed::Union{Nothing, BookSnapshot}
+    run::Int
 end
 
 function _schedule!(state::_SimState, ts::Int64, rank::Int, order_id::Int64)
@@ -394,7 +395,11 @@ function _record_fill!(
     slippage = side == Buy ? notional - reference_notional : reference_notional - notional
     fee = fill_fee(state.config.fees, notional, liquidity)
     fill_number = length(get(state.fills_by_order, order.order_id, Int[])) + 1
-    fill_id = "$(_order_ref(order.order_id))-f$(fill_number)"
+    fill_id = "$(_order_ref(state.run, order.order_id))-f$(fill_number)"
+    # Simulator fills are always new economic events; a pre-existing id is a bug or a
+    # reused portfolio, never an idempotent replay.
+    haskey(p.applied, fill_id) &&
+        _fail(:duplicate_fill_conflict, "simulator fill id $(fill_id) already applied")
     apply_fill!(p, fill_id, ts, p.instrument, side, price, qty, fee)
     fill = Fill(
         fill_id,
@@ -437,7 +442,7 @@ function _terminate!(state::_SimState, order::PaperOrder, status::Symbol, kind::
     record_non_fill!(
         state.portfolio,
         kind,
-        _order_ref(order.order_id),
+        _order_ref(state.run, order.order_id),
         ts,
         state.portfolio.instrument,
         reason,
@@ -588,7 +593,10 @@ function _reported_view(state::_SimState, ts::Int64)
     end
     views = OpenOrderView[]
     for order in state.orders
-        order.status == :rejected && continue
+        # Every terminal state, including rejections, becomes visible only after
+        # report_ns. Activation-time rejects (post-only) depend on the venue book at
+        # activation, and decision-time risk rejects can depend on fills that are not
+        # reported yet, so neither may disappear from the view early.
         if order.terminal_ts_ns !== nothing && _checked_time(order.terminal_ts_ns, report_ns) <= ts
             continue
         end
@@ -660,7 +668,7 @@ function _submit!(state::_SimState, ctx::DecisionContext, decision_id::Int64, in
         record_non_fill!(
             state.portfolio,
             :reject,
-            _order_ref(order_id),
+            _order_ref(state.run, order_id),
             decision_ts,
             state.portfolio.instrument,
             reason,
@@ -704,7 +712,7 @@ function _request_cancel!(
         record_non_fill!(
             state.portfolio,
             :reject,
-            _order_ref(intent.order_id),
+            _order_ref(state.run, intent.order_id),
             decision_ts,
             state.portfolio.instrument,
             "cancel_unknown_or_terminal",
@@ -842,7 +850,8 @@ function _assumptions(config::SimulationConfig, portfolio::PaperPortfolio, sessi
             "approximation" => true,
             "queue_position" => String(model.queue_position),
             "taker_slippage_ticks" => model.taker_slippage_ticks,
-            "seed" => Int64(model.seed % UInt64(typemax(Int64))),
+            # Full 64-bit seed as a decimal string; lossless and JSON-safe.
+            "seed" => string(model.seed),
             "rules" => collect(_FILL_ASSUMPTIONS),
         ),
         "fees" => Dict{String, Any}(
@@ -867,6 +876,7 @@ function _assumptions(config::SimulationConfig, portfolio::PaperPortfolio, sessi
             "mark" => "venue mid at or before the step, half tick rounded against the position",
         ),
         "event_order" => "time, then venue < activation < cancel < observation, then id",
+        "run_index" => portfolio.simulation_runs,
     )
 end
 
@@ -911,6 +921,7 @@ function simulate!(
     end
 
     working = copy(portfolio)
+    working.simulation_runs += 1
     start_equity = _checked_i64(
         Int128(working.cash_subunits) + working.total_cost_subunits,
         "starting book value",
@@ -936,6 +947,7 @@ function simulate!(
         0,
         0,
         nothing,
+        working.simulation_runs,
     )
 
     venue_index = 1

@@ -127,6 +127,11 @@ subset):
 - A reduction allocates `trunc(total_cost * qty / |inventory|)` toward zero, and a full
   close allocates the remaining cost. Realized PnL is `cash_flow - allocated`.
 - Invariant: `cash + total_cost == initial_cash + realized_pnl`.
+
+`simulation_runs` counts completed `simulate!` runs committed to this portfolio. Each
+run prefixes its order and fill ids with `r<run>-`, so a second run on the same
+portfolio can never collide with (and be swallowed as an idempotent replay of) an
+earlier run's fill ids.
 """
 mutable struct PaperPortfolio
     instrument::String
@@ -140,6 +145,7 @@ mutable struct PaperPortfolio
     fees_subunits::Int64
     applied::Dict{String, NTuple{6, Any}}
     audit::Vector{AuditRow}
+    simulation_runs::Int
 end
 
 function PaperPortfolio(
@@ -164,6 +170,7 @@ function PaperPortfolio(
         0,
         Dict{String, NTuple{6, Any}}(),
         AuditRow[],
+        0,
     )
 end
 
@@ -179,8 +186,11 @@ Base.copy(p::PaperPortfolio) = PaperPortfolio(
     p.fees_subunits,
     copy(p.applied),
     copy(p.audit),
+    p.simulation_runs,
 )
 
+# `source` is a private working copy that is discarded after the commit, so sharing its
+# `applied`/`audit` containers with `target` is safe (nothing else holds them).
 function _commit_portfolio!(target::PaperPortfolio, source::PaperPortfolio)
     for name in fieldnames(PaperPortfolio)
         setfield!(target, name, getfield(source, name))
