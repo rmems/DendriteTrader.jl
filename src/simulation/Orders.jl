@@ -114,8 +114,11 @@ Four clocks are kept separate:
 
 `status` is one of `:pending`, `:active`, `:filled`, `:cancelled`, `:rejected`, `:expired`
 (still working when the session ended).
-`queue_ahead_lots` (current) and `initial_queue_ahead_lots` (when it started resting) are
-L2 approximations, not observed queue positions.
+`queue_ahead_lots` is the estimated **venue** (non-simulated) size still ahead of the
+order at its level; earlier-joined simulated orders at the same level are ahead of it
+too and are accounted for separately, in FIFO join order (`join_seq`), at each print.
+`initial_queue_ahead_lots` is the total (venue + simulated) size ahead when it joined.
+All of these are L2 approximations, not observed queue positions.
 """
 mutable struct PaperOrder
     order_id::Int64
@@ -130,6 +133,7 @@ mutable struct PaperOrder
     filled_lots::Int64
     queue_ahead_lots::Int64
     initial_queue_ahead_lots::Int64
+    join_seq::Int64
     resting::Bool
     terminal_ts_ns::Union{Nothing, Int64}
     terminal_reason::Union{Nothing, String}
@@ -148,6 +152,7 @@ Base.copy(order::PaperOrder) = PaperOrder(
     order.filled_lots,
     order.queue_ahead_lots,
     order.initial_queue_ahead_lots,
+    order.join_seq,
     order.resting,
     order.terminal_ts_ns,
     order.terminal_reason,

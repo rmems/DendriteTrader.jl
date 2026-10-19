@@ -128,10 +128,9 @@ subset):
   close allocates the remaining cost. Realized PnL is `cash_flow - allocated`.
 - Invariant: `cash + total_cost == initial_cash + realized_pnl`.
 
-`simulation_runs` counts completed `simulate!` runs committed to this portfolio. Each
-run prefixes its order and fill ids with `r<run>-`, so a second run on the same
-portfolio can never collide with (and be swallowed as an idempotent replay of) an
-earlier run's fill ids.
+`simulation_runs` counts `simulate!` runs committed to this portfolio. `simulate!`
+only accepts a fresh portfolio (zero runs, empty audit); the `r<run>-` prefix on order
+and fill ids is kept as defence in depth against id collisions.
 """
 mutable struct PaperPortfolio
     instrument::String

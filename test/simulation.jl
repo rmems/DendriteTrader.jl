@@ -536,6 +536,37 @@ _base_events() = MarketEvent[_bd(1, 100, Bid, 100, 10), _bd(2, 100, Ask, 102, 10
         @test [v for v in seen_l if v[1] >= 175] != [v for v in seen_d if v[1] >= 175]
     end
 
+    @testset "Leakage 7: venue cancels cannot let a later simulated order jump the queue" begin
+        # A rests first (queue D = 10), B joins behind it (queue D + a = 10 + 3).
+        # A venue cancel of x = 4 leaves venue D - x = 6 ahead of A and 6 + 3 ahead of B.
+        # A print of D - x + a = 9 then fills A for a = 3 and nothing for B. (At 3ce8f20
+        # the cancel capped B's queue at 6 and B was over-filled 3 lots.)
+        events = MarketEvent[
+            _bd(1, 100, Bid, 100, 10),
+            _bd(2, 100, Ask, 102, 10),
+            _bd(3, 150, Bid, 101, 1),
+            _bd(4, 200, Bid, 100, -4),
+            _tp(5, 300, Sell, 100, 9),
+            _bd(6, 301, Bid, 100, -6),
+            _bd(7, 400, Bid, 101, -1),
+        ]
+        actions = Dict{Int, Any}(2 => OrderIntent(Buy, 3, 100), 3 => OrderIntent(Buy, 5, 100))
+        result =
+            simulate!(_portfolio(), _session(events), _at_sequence(actions); config = _config(10))
+        a, b = result.orders
+        @test a.join_seq < b.join_seq
+        @test (a.initial_queue_ahead_lots, b.initial_queue_ahead_lots) == (10, 13)
+        @test [(f.order_id, f.qty_lots) for f in result.fills] == [(1, 3)]
+        @test b.filled_lots == 0
+        @test isempty(reconciliation_errors(result))
+        # Sensitivity: one more traded lot (print of 10) is the first that reaches B.
+        bigger = copy(events)
+        bigger[5] = _tp(5, 300, Sell, 100, 10)
+        more =
+            simulate!(_portfolio(), _session(bigger), _at_sequence(actions); config = _config(10))
+        @test [(f.order_id, f.qty_lots) for f in more.fills] == [(1, 3), (2, 1)]
+    end
+
     @testset "Leakage 4: fees and slippage are applied exactly once" begin
         events =
             vcat(_base_events(), MarketEvent[_bd(3, 150, Bid, 100, 1), _bd(4, 300, Bid, 100, 1)])
@@ -767,40 +798,58 @@ _base_events() = MarketEvent[_bd(1, 100, Bid, 100, 10), _bd(2, 100, Ask, 102, 10
         @test last(result.ledger).kind == :session_end
     end
 
-    @testset "Repeated runs on one portfolio never alias fill ids" begin
-        events = vcat(_base_events(), MarketEvent[_bd(3, 200, Bid, 100, 1)])
-        decide = _at_sequence(2, OrderIntent(Buy, 2, 102; time_in_force = :ioc))
+    @testset "A portfolio can be simulated only once" begin
+        # Run 1 pays fees and realizes PnL, so a reused portfolio would carry
+        # lifetime fees / realized PnL / audit rows into run 2's result and break its
+        # reconciliation and parity export. Reuse is refused instead.
+        events =
+            vcat(_base_events(), MarketEvent[_bd(3, 150, Bid, 101, 5), _bd(4, 300, Bid, 100, 1)])
+        actions = Dict{Int, Any}(
+            2 => OrderIntent(Buy, 2, 102; time_in_force = :ioc),
+            3 => OrderIntent(Sell, 2, 101; time_in_force = :ioc),
+        )
+        fees = FeeSchedule(taker_fee_ppm = 5_000)
         portfolio = _portfolio()
-        first_run = simulate!(portfolio, _session(events), decide; config = _config(10))
-        second_run = simulate!(portfolio, _session(events), decide; config = _config(10))
-        @test only(first_run.fills).fill_id == "r1-o1-f1"
-        @test only(second_run.fills).fill_id == "r2-o1-f1"
-        # Both runs are booked; nothing is swallowed as an idempotent replay.
-        @test portfolio.inventory_lots == 4
-        @test portfolio.cash_subunits == 100_000 - 2 * (2 * 102)
-        @test count(row -> row.idempotent_replay, portfolio.audit) == 0
-        @test portfolio.simulation_runs == 2
-        @test second_run.assumptions["run_index"] == 2
-        @test first_run.result_hash != second_run.result_hash
-        # A run that fails is not counted and does not consume a run index.
-        @test_throws ErrorException simulate!(
+        first_run = simulate!(
             portfolio,
+            _session(events),
+            _at_sequence(actions);
+            config = _config(10; fees = fees),
+        )
+        @test portfolio.fees_subunits > 0 && portfolio.realized_pnl_subunits != 0
+        @test isempty(reconciliation_errors(first_run))
+        @test run_parity_fixture(JSON.parse(JSON.json(parity_document(first_run, "run1"))))[1]
+        @test first_run.fills[1].fill_id == "r1-o1-f1"
+        @test portfolio.simulation_runs == 1
+        state_before = (portfolio.cash_subunits, portfolio.fees_subunits, length(portfolio.audit))
+        @test_throws ArgumentError simulate!(
+            portfolio,
+            _session(events),
+            _at_sequence(actions);
+            config = _config(10; fees = fees),
+        )
+        @test (portfolio.cash_subunits, portfolio.fees_subunits, length(portfolio.audit)) ==
+              state_before
+        # A portfolio with hand-applied audit rows is not fresh either.
+        handled = _portfolio()
+        apply_fill!(handled, "manual", 1, _SIM_INSTRUMENT, Buy, 100, 1, 0)
+        @test_throws ArgumentError simulate!(
+            handled,
+            _session(events),
+            _ -> nothing;
+            config = _config(10),
+        )
+        # A failed run does not consume the portfolio.
+        fresh = _portfolio()
+        @test_throws ErrorException simulate!(
+            fresh,
             _session(events),
             _ -> error("x");
             config = _config(10),
         )
-        @test portfolio.simulation_runs == 2
-        # A stale fill id already in the portfolio is a conflict, never a silent replay.
-        planted = _portfolio()
-        apply_fill!(planted, "r1-o1-f1", 110, _SIM_INSTRUMENT, Buy, 102, 2, 0)
-        cash = planted.cash_subunits
-        @test_throws PortfolioError simulate!(
-            planted,
-            _session(events),
-            decide;
-            config = _config(10),
-        )
-        @test planted.cash_subunits == cash && planted.inventory_lots == 2
+        @test fresh.simulation_runs == 0
+        @test simulate!(fresh, _session(events), _ -> nothing; config = _config(10)) isa
+              SimulationResult
     end
 
     @testset "Reject before mutation" begin
@@ -902,14 +951,33 @@ _base_events() = MarketEvent[_bd(1, 100, Bid, 100, 10), _bd(2, 100, Ask, 102, 10
             _bd(3, 200, Ask, 102, -10),            # ask side empty: mark is stale
             _bd(4, 300, Ask, 104, 10),             # fresh again, mid 102
         ]
-        preloaded = _portfolio()
-        apply_fill!(preloaded, "pre", 1, _SIM_INSTRUMENT, Buy, 100, 2, 0)
-        result = simulate!(preloaded, _session(events), _ -> nothing; config = _config(0))
+        # Hold a long position so a stale mark matters: buy 2 at 101, then both sides vanish.
+        long_session = MarketEvent[
+            _bd(1, 10, Bid, 100, 1),
+            _bd(2, 10, Ask, 101, 5),
+            _bd(3, 20, Ask, 101, -3),
+            _bd(4, 30, Bid, 100, -1),
+            _bd(5, 30, Ask, 101, -2),
+        ]
+        open_long = simulate!(
+            _portfolio(),
+            _session(long_session),
+            _at_sequence(2, OrderIntent(Buy, 2, 101; time_in_force = :ioc));
+            config = _config(0),
+        )
+        venue_long = [p for p in open_long.ledger if p.kind == :venue_event]
+        @test venue_long[end].mark_status == :stale
+        @test venue_long[end].inventory_lots == 2
+        @test venue_long[end].mark_price_ticks == 100   # last valid mid fld(100 + 101, 2)
+        @test isempty(reconciliation_errors(open_long))
+        # A fresh run cannot hold inventory before a valid mid exists (no fills without a
+        # book), so the :missing path is checked on a flat book: no value is invented.
+        result = simulate!(_portfolio(), _session(events), _ -> nothing; config = _config(0))
         venue_points = [p for p in result.ledger if p.kind == :venue_event]
         @test [p.mark_status for p in venue_points] == [:missing, :fresh, :stale, :fresh]
         @test venue_points[1].mark_price_ticks === nothing
-        @test venue_points[1].unrealized_pnl_subunits === nothing
-        @test venue_points[1].equity_subunits === nothing
+        @test venue_points[1].unrealized_pnl_subunits == 0
+        @test venue_points[1].equity_subunits == 100_000
         @test venue_points[3].mark_price_ticks == 101
         @test venue_points[4].mark_price_ticks == 102
         @test result.metrics.stale_mark_steps > 0 && result.metrics.missing_mark_steps > 0

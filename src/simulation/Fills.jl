@@ -66,7 +66,10 @@ Assumptions, all recorded in `SimulationResult.assumptions`:
    `queue_position = :random` (less conservative, labelled as such).
 5. Queue advance (risk-averse): only trade prints at the order's price advance the
    queue; displayed-size decreases advance it only when the level becomes smaller
-   than the remaining queue ahead. A print fills only the size left after the queue.
+   than the remaining venue queue ahead. Simulated orders at one level form a FIFO
+   queue in join order: an order's queue ahead is its venue-ahead estimate plus the
+   remaining size of simulated orders that joined earlier, and venue cancels never
+   reduce the simulated part. A print fills only the size left after the queue.
 6. Trade-through: a print strictly through the limit fills up to the print size.
 7. Quote-through: opposite displayed liquidity appearing strictly through a resting
    limit fills it as maker at the limit price, up to that displayed size. A locked
@@ -99,6 +102,7 @@ const _FILL_ASSUMPTIONS = (
     "taker orders sweep displayed levels within the limit at level price plus slippage",
     "simulator-consumed displayed liquidity is unavailable until the level is removed",
     "queue advances only on prints at the order price, or when the level shrinks below it",
+    "simulated orders at one level are FIFO by join order; venue cancels never skip them",
     "a print strictly through a resting limit fills up to the print size",
     "displayed liquidity strictly through a resting limit fills it as maker at the limit",
     "a locked quote at the resting limit does not fill",

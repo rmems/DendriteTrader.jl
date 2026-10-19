@@ -133,6 +133,7 @@ _order_dict(o::PaperOrder) = Dict{String, Any}(
     "filled_lots" => o.filled_lots,
     "queue_ahead_lots" => o.queue_ahead_lots,
     "initial_queue_ahead_lots" => o.initial_queue_ahead_lots,
+    "join_seq" => o.join_seq,
     "terminal_ts_ns" => o.terminal_ts_ns,
     "terminal_reason" => o.terminal_reason,
 )

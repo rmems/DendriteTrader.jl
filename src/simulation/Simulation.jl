@@ -313,6 +313,7 @@ mutable struct _SimState
     decision_counter::Int64
     last_complete_observed::Union{Nothing, BookSnapshot}
     run::Int
+    join_counter::Int64
 end
 
 function _schedule!(state::_SimState, ts::Int64, rank::Int, order_id::Int64)
@@ -495,24 +496,30 @@ function _activate!(state::_SimState, order::PaperOrder, ts::Int64)
     else
         Int64(_splitmix64(model.seed ⊻ UInt64(order.order_id)) % UInt64(displayed + 1))
     end
-    own_ahead = sum(
-        (
-            o.remaining_lots for o in state.orders if o.resting &&
-                _is_live(o) &&
-                o.intent.side == intent.side &&
-                o.intent.limit_price_ticks == intent.limit_price_ticks
-        );
-        init = Int64(0),
-    )
-    order.queue_ahead_lots = ahead + own_ahead
-    order.initial_queue_ahead_lots = order.queue_ahead_lots
+    state.join_counter += 1
+    order.join_seq = state.join_counter
+    order.queue_ahead_lots = ahead
+    order.initial_queue_ahead_lots = ahead + _own_ahead(_resting_orders(state), order)
     order.resting = true
     return nothing
 end
 
+# Resting simulated orders in FIFO join order.
 function _resting_orders(state::_SimState)
-    return [o for o in state.orders if o.resting && o.status == :active]
+    resting = [o for o in state.orders if o.resting && o.status == :active]
+    return sort!(resting; by = o -> o.join_seq)
 end
+
+# Remaining size of simulated orders that joined the same level earlier than `order`.
+_own_ahead(resting, order::PaperOrder) = sum(
+    (
+        o.remaining_lots for o in resting if o !== order &&
+            o.join_seq < order.join_seq &&
+            o.intent.side == order.intent.side &&
+            o.intent.limit_price_ticks == order.intent.limit_price_ticks
+    );
+    init = Int64(0),
+)
 
 function _on_book_delta!(state::_SimState, event::BookDelta)
     levels = _levels(state.venue, event.side)
@@ -522,6 +529,8 @@ function _on_book_delta!(state::_SimState, event::BookDelta)
         intent = order.intent
         if event.side == _own_book_side(intent.side) &&
            event.price_ticks == intent.limit_price_ticks
+            # Only venue size ahead can be cancelled by a venue delta; simulated orders
+            # that joined earlier stay ahead until they fill or are cancelled.
             event.size_delta < 0 &&
                 (order.queue_ahead_lots = min(order.queue_ahead_lots, displayed))
         elseif event.size_delta > 0 &&
@@ -548,21 +557,25 @@ function _on_book_delta!(state::_SimState, event::BookDelta)
 end
 
 function _on_trade_print!(state::_SimState, event::TradePrint)
-    # Each order's queue is advanced by the full print size (everything that traded at
-    # its level was ahead of it, including earlier simulated orders it queued behind).
-    # Simulated fills from one print never exceed the print size in total.
+    # FIFO per level: the print consumes the queue prefix of length `event.size`. An
+    # order's total queue ahead is its venue-ahead estimate plus the pre-print remaining
+    # size of simulated orders that joined the same level earlier. Simulated fills from
+    # one print never exceed the print size in total.
+    resting = _resting_orders(state)
+    own_ahead = Dict(order.order_id => _own_ahead(resting, order) for order in resting)
     leftover_print = event.size
-    for order in _resting_orders(state)
+    for order in resting
         intent = order.intent
         hits_order = intent.side == Buy ? event.aggressor_side == Sell : event.aggressor_side == Buy
         hits_order || continue
         _within_limit(intent.side, event.price_ticks, intent.limit_price_ticks) || continue
-        # A print strictly through the limit implies the whole queue at the limit traded.
+        # A print strictly through the limit implies the whole venue queue at the limit
+        # traded; earlier simulated orders at the limit are still ahead.
         _strictly_through(intent.side, event.price_ticks, intent.limit_price_ticks) &&
             (order.queue_ahead_lots = 0)
-        ahead = order.queue_ahead_lots
-        order.queue_ahead_lots = max(Int64(0), ahead - event.size)
-        qty = min(order.remaining_lots, max(Int64(0), event.size - ahead), leftover_print)
+        ahead = Int128(order.queue_ahead_lots) + own_ahead[order.order_id]
+        order.queue_ahead_lots = max(Int64(0), order.queue_ahead_lots - event.size)
+        qty = Int64(min(order.remaining_lots, max(Int128(0), event.size - ahead), leftover_print))
         qty > 0 || continue
         leftover_print -= qty
         _record_fill!(
@@ -652,6 +665,7 @@ function _submit!(state::_SimState, ctx::DecisionContext, decision_id::Int64, in
         something(activation, decision_ts),
         reason === nothing ? :pending : :rejected,
         intent.qty_lots,
+        0,
         0,
         0,
         0,
@@ -892,8 +906,11 @@ the event becomes observable under `config.feed`, and returns `nothing`, an
 decision time (a rejection mutates nothing but the audit trail) and activated at
 `decision_ts + config.latency.order_entry_ns`.
 
-Requires `portfolio.instrument == session.instrument`, `qty_scale == 1` (so every
-partial fill notional is exact) and initial cash within `config.limits`.
+Requires a **fresh** portfolio (no committed simulation run and an empty audit trail),
+`portfolio.instrument == session.instrument`, `qty_scale == 1` (so every partial fill
+notional is exact) and initial cash within `config.limits`. Reusing a portfolio is
+refused because `SimulationResult` reconciliation and `parity_document` describe one
+run from a flat, fee-free, PnL-free start; create a new `PaperPortfolio` per run.
 """
 function simulate!(
     portfolio::PaperPortfolio,
@@ -901,6 +918,12 @@ function simulate!(
     decide;
     config::SimulationConfig,
 )
+    portfolio.simulation_runs == 0 && isempty(portfolio.audit) || throw(
+        ArgumentError(
+            "simulate! requires a fresh PaperPortfolio (no prior simulation run or audit " *
+            "rows); create a new portfolio for each run",
+        ),
+    )
     _check_instrument(portfolio, session.instrument)
     portfolio.scale.qty_scale == 1 ||
         _fail(:unsupported_subset, "the simulator requires qty_scale == 1")
@@ -948,6 +971,7 @@ function simulate!(
         0,
         nothing,
         working.simulation_runs,
+        0,
     )
 
     venue_index = 1
