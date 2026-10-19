@@ -60,8 +60,7 @@ end
     labels = label_event_horizon(snapshots; horizon_events = 1)
 
     @test [target.label for target in labels] == [Up, Up, Down]
-    @test [(target.anchor_sequence, target.target_sequence) for target in labels] ==
-          [(1, 2), (2, 3), (3, 4)]
+    @test [(target.anchor_sequence, target.target_sequence) for target in labels] == [(1, 2), (2, 3), (3, 4)]
 end
 
 @testset "Labels retain exact event offsets" begin
@@ -92,7 +91,10 @@ end
     missing_instrument = BookSnapshot(:SIM, "", 100, 110, 1, [100 => 10], [102 => 10])
 
     @test_throws ArgumentError microstructure_features([missing_venue])
-    @test_throws ArgumentError label_event_horizon([missing_venue, missing_venue]; horizon_events = 1)
+    @test_throws ArgumentError label_event_horizon(
+        [missing_venue, missing_venue];
+        horizon_events = 1,
+    )
     @test_throws ArgumentError microstructure_features([missing_instrument])
     @test_throws ArgumentError label_event_horizon(
         [missing_instrument, missing_instrument];
@@ -112,15 +114,7 @@ end
 
 @testset "Top-of-book arithmetic handles Int64 sizes" begin
     largest_size = typemax(Int64)
-    snapshot = BookSnapshot(
-        :SIM,
-        "XYZ",
-        100,
-        110,
-        1,
-        [100 => largest_size],
-        [102 => largest_size],
-    )
+    snapshot = BookSnapshot(:SIM, "XYZ", 100, 110, 1, [100 => largest_size], [102 => largest_size])
 
     row = only(microstructure_features([snapshot]))
     @test row.imbalance == 0.0
@@ -129,15 +123,7 @@ end
 
 @testset "Top-of-book imbalance retains unit differences above Float64 precision" begin
     large_size = Int64(1) << 53
-    snapshot = BookSnapshot(
-        :SIM,
-        "XYZ",
-        100,
-        110,
-        1,
-        [100 => large_size + 1],
-        [102 => large_size],
-    )
+    snapshot = BookSnapshot(:SIM, "XYZ", 100, 110, 1, [100 => large_size + 1], [102 => large_size])
 
     imbalance = only(microstructure_features([snapshot])).imbalance
     @test imbalance > 0.0
@@ -146,24 +132,10 @@ end
 
 @testset "Top-of-book price averages retain Int64 boundary ticks" begin
     boundary = Int64(1) << 53
-    midpoint_boundary = BookSnapshot(
-        :SIM,
-        "XYZ",
-        100,
-        110,
-        1,
-        [boundary + 1 => 3],
-        [boundary + 2 => 3],
-    )
-    microprice_boundary = BookSnapshot(
-        :SIM,
-        "XYZ",
-        100,
-        110,
-        1,
-        [boundary => 3],
-        [boundary + 2 => 3],
-    )
+    midpoint_boundary =
+        BookSnapshot(:SIM, "XYZ", 100, 110, 1, [boundary + 1 => 3], [boundary + 2 => 3])
+    microprice_boundary =
+        BookSnapshot(:SIM, "XYZ", 100, 110, 1, [boundary => 3], [boundary + 2 => 3])
 
     midpoint_row = only(microstructure_features([midpoint_boundary]))
     microprice_row = only(microstructure_features([microprice_boundary]))
@@ -185,15 +157,7 @@ end
 @testset "Labels retain one tick at large Int64 prices" begin
     boundary = Int64(1) << 53
     anchor = BookSnapshot(:SIM, "XYZ", 100, 110, 1, [boundary => 10], [boundary => 10])
-    target = BookSnapshot(
-        :SIM,
-        "XYZ",
-        200,
-        210,
-        2,
-        [boundary + 1 => 10],
-        [boundary + 1 => 10],
-    )
+    target = BookSnapshot(:SIM, "XYZ", 200, 210, 2, [boundary + 1 => 10], [boundary + 1 => 10])
 
     @test only(label_event_horizon([anchor, target]; horizon_events = 1)).label == Up
 end
@@ -211,9 +175,8 @@ end
     anchor = BookSnapshot(:SIM, "XYZ", 100, 110, 1, [100 => 10], [102 => 10])
     target = BookSnapshot(:SIM, "XYZ", 200, 210, 2, [101 => 10], [103 => 10])
 
-    default_precision = only(
-        label_event_horizon([anchor, target]; horizon_events = 1, threshold_ticks = 0.99),
-    )
+    default_precision =
+        only(label_event_horizon([anchor, target]; horizon_events = 1, threshold_ticks = 0.99))
     constrained_precision = setprecision(BigFloat, 2) do
         only(label_event_horizon([anchor, target]; horizon_events = 1, threshold_ticks = 0.99))
     end
@@ -288,15 +251,13 @@ end
 end
 
 @testset "Normalization falls back when a finite scale rounds to zero" begin
-    training = FeatureFrame(
-        [
-            feature_row(1, 0.0),
-            feature_row(2, 0.0),
-            feature_row(3, 0.0),
-            feature_row(4, 0.0),
-            feature_row(5, nextfloat(0.0)),
-        ],
-    )
+    training = FeatureFrame([
+        feature_row(1, 0.0),
+        feature_row(2, 0.0),
+        feature_row(3, 0.0),
+        feature_row(4, 0.0),
+        feature_row(5, nextfloat(0.0)),
+    ],)
 
     normalizer = fit!(RollingZScore(), training)
     transformed = transform!(normalizer, FeatureFrame(collect(training.rows)))

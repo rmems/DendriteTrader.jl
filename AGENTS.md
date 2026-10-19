@@ -34,8 +34,12 @@ docstring in `src/DendriteTrader.jl`.
 # Tests (CI: julia-actions/julia-buildpkg + julia-runtest)
 julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
 
-# Format check (ci.yml "JuliaFormatter" job). Pkg.add modifies Project.toml/Manifest; don't commit that.
-julia --project=. -e 'using Pkg; Pkg.add("JuliaFormatter"); using JuliaFormatter; format(".", check=true)'
+# Format check (ci.yml "JuliaFormatter" job). Non-mutating; uses a temp env, so Project.toml is untouched.
+# Exits 1 if any file needs formatting. (JuliaFormatter 2.x ignores `check=true`; don't use it.)
+julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.add(name="JuliaFormatter", version="2"); using JuliaFormatter; exit(format("."; overwrite=false) ? 0 : 1)'
+
+# Apply formatting in place (same pinned formatter)
+julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.add(name="JuliaFormatter", version="2"); using JuliaFormatter; format(".")'
 
 # Docs (docs.yml)
 julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'

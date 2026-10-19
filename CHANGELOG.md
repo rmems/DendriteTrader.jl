@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **CI format gate**: the `JuliaFormatter` CI job now actually fails on unformatted code. It previously ran `format(".", check=true)`, which JuliaFormatter 2.x ignores (it reformatted in place and exited 0). The job now installs JuliaFormatter `2.x` into a temporary environment and exits 1 when `format("."; overwrite=false)` returns `false`. `AGENTS.md` documents the same command. `src/features/Labels.jl`, `src/market/Replay.jl` and `test/leakage.jl` were reformatted (layout only, parsed ASTs unchanged).
 - License: switched from GPL-3.0-only to dual MIT OR Apache-2.0.
   - Added `LICENSE-MIT` and `LICENSE-APACHE-2.0`.
   - Updated top-level `LICENSE` to declare dual licensing.
