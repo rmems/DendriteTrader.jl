@@ -35,8 +35,9 @@ stop and say so instead of working around it.
    policies, sizing, or `predict!`.
 7. **Unsupported positions are rejected, never silently clamped or coerced.** An invalid
    or out-of-bounds size, side, or price raises or returns an explicit rejection with a
-   reason. Do not add new silent `clamp`/`min` coercions; existing ones are listed under
-   "Known gaps" below.
+   reason. Do not add new silent `clamp`/`min` coercions. Known existing examples are
+   listed under "Known gaps" below; that list is not exhaustive, so check any `clamp`,
+   `min` or `max` on an input before treating it as compliant.
 8. **Every experiment emits a manifest** recording code revision, data hashes,
    dependency versions (Manifest), environment, seeds, configuration, and declared
    latency/fill/fee assumptions. A result without a manifest is not evidence.
@@ -55,6 +56,13 @@ patterns; fix them only in a scoped change with tests.
 - `execute_signal!` (`src/DendriteTrader.jl`) caps Kelly-sized units with
   `min(position.units, engine.max_position_size)` instead of rejecting (rule 7). The
   explicit `position_units_override` path already rejects values above the cap.
+- `size_position` (`src/sizing/SizingModule.jl`), which `execute_signal!` calls, returns
+  a zero-unit `PositionSize` with no reason when `price <= 0` or `account_balance <= 0`
+  instead of rejecting (rule 7). A zero size from it is not necessarily a real decision.
+  It also clamps `confidence` and the Kelly fraction to `[0, 1]`.
+- `kelly_fraction` and `half_kelly` (same file) silently clamp `win_rate`/`p` to `[0, 1]`
+  and floor `avg_win`/`avg_loss`/`b` at `1e-9`. The output caps (`[0, 0.20]` and
+  `[0, 1]`) are documented sizing policy; the input coercions are the gap.
 - `RidgeClassifier` prediction clamps standardized features to ±1e6
   (`_standardized_features` in `src/models/Baselines.jl`).
 - There is no experiment runner or manifest writer yet (rule 8); see Tasks 5-7 of
