@@ -546,7 +546,9 @@ Stateful execution engine with confidence gating and position management.
 
 # Fields
 - `confidence_threshold`: minimum SNN confidence to execute (default 0.85)
-- `max_position_size`:    hard cap on position units (default 10.0)
+- `max_position_size`:    hard cap on position units (default 10.0). Kelly-sized
+                          units above the cap are rejected (`max_position_reject`),
+                          not shrunk to the cap.
 - `max_portfolio_exposure`: cap on total gross notional exposure in price
                           units across all tickers (default `Inf`, unlimited).
                           Positions are valued at the last execution price seen
@@ -724,6 +726,30 @@ Process one signal: gate by confidence, size via Kelly, update positions.
 omit it to use the wall clock. `position_units_override` is reserved for simulators
 that must apply an explicit filled quantity, such as a full-position close; the
 decision event and position ledger both use the overridden quantity.
+
+# Rejections
+Every rejection increments `rejected_signals`, records a `SignalEvent`, and returns an
+`ExecutionDecision` with `executed = false` and an explicit `reason`:
+
+- `gate_reject`: confidence below the engine threshold.
+- `neutral_reject`: `Neutral` side.
+- `sizing_reject` (reason prefix `invalid_sizing_input:`): `size_position` rejected
+  its inputs, e.g. `signal.price <= 0`, `account_balance <= 0`, a non-finite value, or
+  confidence outside `[0, 1]`.
+- `max_position_reject` (reason prefix `exceeds_max_position:`): Kelly-sized units
+  exceed `engine.max_position_size`.
+- `zero_reject`: the Kelly fraction is zero (no edge), so the sized position is zero.
+- `portfolio_reject`: the projected gross exposure would exceed `max_portfolio_exposure`.
+
+An invalid `position_units_override` (non-finite, negative, or above
+`max_position_size`) is a caller error and throws `ArgumentError`. When an override
+is supplied and `account_balance` is finite but `<= 0`, Kelly sizing is skipped (the
+override quantity does not depend on it) so an existing position can still be closed;
+the price is still validated and the reported `kelly_fraction` is `0.0`.
+
+Behavior change: earlier versions silently capped Kelly-sized units with
+`min(units, max_position_size)` and executed the reduced size, and treated
+`account_balance <= 0` or `price <= 0` as a `zero_reject` with no specific reason.
 """
 function execute_signal!(
     engine::ExecutionEngine,
@@ -768,14 +794,72 @@ function execute_signal!(
         return ExecutionDecision(signal, false, "neutral signal", 0.0, 0.0, 0.0, lat)
     end
 
-    position = size_position(
-        confidence = Float64(signal.confidence),
-        price = signal.price,
-        account_balance = account_balance,
-        payoff_ratio = engine.payoff_ratio,
-    )
+    # Invalid sizing inputs (non-positive or non-finite price or balance, confidence
+    # outside [0, 1], invalid payoff ratio) are rejected with an explicit reason rather
+    # than sized to zero or coerced into range.
+    #
+    # Exception: an explicit-fill override (e.g. a simulator closing an open position)
+    # does not use the Kelly size, so it may proceed when the account balance is
+    # finite but non-positive. The price is still validated, and the reported Kelly
+    # fraction is 0.0 because no Kelly size was computed.
+    sizing_error = nothing
+    kelly = 0.0
+    kelly_units = 0.0
+    if position_units_override !== nothing && isfinite(account_balance) && account_balance <= 0.0
+        price_ok = isfinite(signal.price) && signal.price > 0.0
+        price_ok || (sizing_error = "price must be finite and positive, got $(repr(signal.price))")
+    else
+        try
+            position = size_position(
+                confidence = Float64(signal.confidence),
+                price = signal.price,
+                account_balance = account_balance,
+                payoff_ratio = engine.payoff_ratio,
+            )
+            kelly = position.kelly_fraction
+            kelly_units = position.units
+        catch e
+            e isa ArgumentError || rethrow()
+            sizing_error = e.msg
+        end
+    end
+    if sizing_error !== nothing
+        engine.rejected_signals += 1
+        reason = "invalid_sizing_input: $(sizing_error)"
+        _record_event!(
+            engine,
+            SignalEvent(
+                "sizing_reject",
+                signal.ticker,
+                signal.confidence,
+                string(signal.side);
+                reason = reason,
+                latency_ns = lat,
+            ),
+        )
+        return ExecutionDecision(signal, false, reason, 0.0, 0.0, 0.0, lat)
+    end
+
     units = if position_units_override === nothing
-        min(position.units, engine.max_position_size)
+        # Kelly-sized units above the hard cap are rejected, never shrunk to the cap.
+        if kelly_units > engine.max_position_size
+            engine.rejected_signals += 1
+            reason = "exceeds_max_position: Kelly-sized units $(kelly_units) exceed max_position_size $(engine.max_position_size)"
+            _record_event!(
+                engine,
+                SignalEvent(
+                    "max_position_reject",
+                    signal.ticker,
+                    signal.confidence,
+                    string(signal.side);
+                    reason = reason,
+                    kelly_fraction = kelly,
+                    latency_ns = lat,
+                ),
+            )
+            return ExecutionDecision(signal, false, reason, kelly, 0.0, 0.0, lat)
+        end
+        kelly_units
     else
         overridden = Float64(position_units_override)
         if !isfinite(overridden) || overridden < 0.0
@@ -796,19 +880,11 @@ function execute_signal!(
                 signal.confidence,
                 string(signal.side);
                 reason = "zero-sized position",
-                kelly_fraction = position.kelly_fraction,
+                kelly_fraction = kelly,
                 latency_ns = lat,
             ),
         )
-        return ExecutionDecision(
-            signal,
-            false,
-            "zero-sized position",
-            position.kelly_fraction,
-            0.0,
-            0.0,
-            lat,
-        )
+        return ExecutionDecision(signal, false, "zero-sized position", kelly, 0.0, 0.0, lat)
     end
 
     applied_fraction = account_balance <= 0.0 ? 0.0 : (units * signal.price) / account_balance
@@ -834,11 +910,11 @@ function execute_signal!(
                 signal.confidence,
                 string(signal.side);
                 reason = reason,
-                kelly_fraction = position.kelly_fraction,
+                kelly_fraction = kelly,
                 latency_ns = lat,
             ),
         )
-        return ExecutionDecision(signal, false, reason, position.kelly_fraction, 0.0, 0.0, lat)
+        return ExecutionDecision(signal, false, reason, kelly, 0.0, 0.0, lat)
     end
 
     # Update position book
@@ -857,22 +933,14 @@ function execute_signal!(
             signal.ticker,
             signal.confidence,
             string(signal.side);
-            kelly_fraction = position.kelly_fraction,
+            kelly_fraction = kelly,
             latency_ns = lat,
             executed = true,
             position_units = units,
             applied_fraction = applied_fraction,
         ),
     )
-    return ExecutionDecision(
-        signal,
-        true,
-        "executed",
-        position.kelly_fraction,
-        applied_fraction,
-        units,
-        lat,
-    )
+    return ExecutionDecision(signal, true, "executed", kelly, applied_fraction, units, lat)
 end
 
 """

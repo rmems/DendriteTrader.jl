@@ -50,6 +50,8 @@ signal = TradeSignal(Dict(
 ))
 
 decision = execute_signal!(engine, signal, 10_000.0)
+# Kelly sizing proposes ~43 units here, above max_position_size = 10.0, so this
+# signal is rejected with reason "exceeds_max_position: ..." rather than shrunk.
 println(decision.executed, " — ", decision.reason)
 ```
 

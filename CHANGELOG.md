@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking: sizing rejects invalid inputs instead of clamping)
+
+Research invariant 7: unsupported or invalid sizes and prices are rejected with an
+explicit reason, never silently clamped or coerced. Public signatures are unchanged.
+
+- `execute_signal!` no longer caps Kelly-sized units with `min(units, max_position_size)`.
+  A signal whose Kelly size exceeds `max_position_size` is rejected: `executed = false`,
+  `rejected_signals` is incremented, a `max_position_reject` event is recorded, and the
+  reason starts with `exceeds_max_position:`. Units exactly at the cap are accepted.
+  With the defaults (`max_position_size = 10.0`, `payoff_ratio = 1.5`,
+  `kelly_scalar = 0.5`) and a `10_000` balance, the Kelly size exceeds 10 units
+  whenever the price is below about `1_000 × k` (for example below ~433 at
+  confidence 0.92, where `k ≈ 0.433`), so those signals are now rejected. Raise
+  `max_position_size` to execute them at their full Kelly size.
+- `execute_signal!` rejects invalid sizing inputs (`price <= 0`, `account_balance <= 0`,
+  non-finite values, confidence outside `[0, 1]`) with a `sizing_reject` event and a reason
+  starting with `invalid_sizing_input:`. Previously these were a `zero_reject` with the
+  generic reason `"zero-sized position"`. An explicit `position_units_override` (used by
+  `run_backtest` to close a position) still proceeds when the balance is finite but
+  `<= 0`, because it does not use Kelly sizing; the price is still validated.
+- `size_position` throws `ArgumentError` when `price <= 0`, `account_balance <= 0`, either
+  is non-finite, `confidence` is outside `[0, 1]` or non-finite, `payoff_ratio <= 0`, or
+  `kelly_scalar < 0`. Previously it returned a zero-unit `PositionSize` with no reason for
+  non-positive price/balance, clamped `confidence` into `[0, 1]`, and floored
+  `payoff_ratio` at `1e-9`. A negative edge still returns a zero-unit position.
+- `kelly_fraction` throws `ArgumentError` when `win_rate` is outside `[0, 1]` or
+  non-finite, or `avg_win`/`avg_loss` is non-positive or non-finite (previously clamped
+  and floored at `1e-9`). The `[0, 0.20]` output cap is unchanged documented policy.
+- `half_kelly` (and `from_confidence`, which delegates to it) throws `ArgumentError` when
+  `p` is outside `[0, 1]` or non-finite, or `b` is non-positive or non-finite (previously
+  clamped and floored at `1e-9`). The `[0, 1]` output cap is unchanged.
+- `run_backtest` inherits the engine change: with the default `BacktestConfig`
+  (`max_position_size = 10.0`), entries whose Kelly size exceeds 10 units are now
+  rejected rather than opened at 10 units.
+
 ### Added
 
 - **Event persistence**: `ExecutionEngine` can append every `SignalEvent` to a JSON-lines log (`log_file` and `truncate` kwargs). New `load_history(path)` reads the log back, skipping missing/empty/malformed lines. New `close_log!(engine)` flushes and closes the log handle.

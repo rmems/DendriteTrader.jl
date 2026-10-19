@@ -141,6 +141,8 @@ signal = TradeSignal(Dict(
 ))
 
 decision = execute_signal!(engine, signal, 10_000.0)
+# With max_position_size = 10.0, the ~43 Kelly-sized units are rejected
+# (reason "exceeds_max_position: ..."); sizes are never silently capped.
 println(decision)
 ```
 
@@ -212,13 +214,13 @@ println(position.risk)
 
 | Type / Function | Description |
 |-----------------|-------------|
-| `kelly_fraction(; win_rate, avg_win, avg_loss)` | Conservative half-Kelly fraction from historical trade statistics, clamped to `[0.0, 0.20]` |
-| `half_kelly(p, b)` | Half-Kelly fraction for win probability `p` and payoff ratio `b` |
+| `kelly_fraction(; win_rate, avg_win, avg_loss)` | Conservative half-Kelly fraction from historical trade statistics; output capped to `[0.0, 0.20]`. Invalid inputs (`win_rate` outside `[0, 1]`, non-positive `avg_win`/`avg_loss`, non-finite values) throw `ArgumentError` |
+| `half_kelly(p, b)` | Half-Kelly fraction for win probability `p` in `[0, 1]` and payoff ratio `b > 0`; invalid inputs throw `ArgumentError` |
 | `from_confidence(; confidence, payoff_ratio)` | Maps neural confidence directly to a half-Kelly fraction |
 | `RiskTier` | Qualitative risk enum: `Aggressive`, `Moderate`, `Conservative`, `Minimal` |
 | `risk_tier(confidence)` | Classifies confidence into a `RiskTier` |
 | `PositionSize` | Result struct with units, Kelly fraction, confidence, risk tier, and account risk percentage |
-| `size_position(; confidence, price, account_balance, payoff_ratio, kelly_scalar)` | Computes full position sizing from neural confidence |
+| `size_position(; confidence, price, account_balance, payoff_ratio, kelly_scalar)` | Computes full position sizing from neural confidence; invalid inputs (e.g. `price <= 0`, `account_balance <= 0`, confidence outside `[0, 1]`) throw `ArgumentError` |
 
 ## Rate Limiter
 

@@ -52,7 +52,8 @@ Configuration for backtest runs.
 - `initial_balance`: starting account balance (default 10,000)
 - `confidence_threshold`: minimum signal confidence to execute (default 0.85)
 - `payoff_ratio`: odds-style average win/loss ratio for Kelly sizing (default 1.5)
-- `max_position_size`: hard cap on position units (default 10.0)
+- `max_position_size`: hard cap on position units (default 10.0). Kelly-sized entries
+  above the cap are rejected (`max_position_reject`), not shrunk to the cap.
 - `slippage_pct`: slippage percentage per trade (default 0.0)
 - `commission_pct`: commission percentage per trade (default 0.0)
 - `risk_free_rate`: annualized risk-free rate for Sharpe/Sortino (default 0.0)
