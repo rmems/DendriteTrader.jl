@@ -107,8 +107,8 @@ function _fifo_oracle(script; queue_position::Symbol = :back, seed::UInt64 = UIn
             side = aggressor == :sell ? :bid : :ask
             levels = sort!(
                 [
-                    key for key in keys(book) if
-                    first(key) == side && (side == :bid ? last(key) >= price : last(key) <= price)
+                    key for key in keys(book) if first(key) == side &&
+                        (side == :bid ? last(key) >= price : last(key) <= price)
                 ];
                 by = last,
                 rev = side == :bid,
@@ -173,7 +173,9 @@ function _random_queue_case(seed::Integer; steps::Integer = 24)
         if roll < 4
             add!(side, _pick!(rng, prices), 1 + _draw!(rng, 6))
         elseif roll < 6
-            live = [key for (key, size) in data if first(key) == side && size > 0 && last(key) in prices]
+            live = [
+                key for (key, size) in data if first(key) == side && size > 0 && last(key) in prices
+            ]
             isempty(live) && continue
             key = _pick!(rng, sort!(live))
             k = 1 + _draw!(rng, data[key])
@@ -183,8 +185,8 @@ function _random_queue_case(seed::Integer; steps::Integer = 24)
             push!(script, (:cancel, side, Int64(last(key)), Int64(k)))
         elseif roll < 9
             levels = [
-                last(key) for (key, size) in data if
-                first(key) == side && size > 0 && last(key) in prices
+                last(key) for
+                (key, size) in data if first(key) == side && size > 0 && last(key) in prices
             ]
             isempty(levels) && continue
             price = side == :bid ? maximum(levels) : minimum(levels)
@@ -236,7 +238,14 @@ end
             @test FeeSchedule(maker_fee_ppm = ok, taker_fee_ppm = ok) isa FeeSchedule
         end
         guarded = _portfolio()
-        @test_throws PortfolioError record_non_fill!(guarded, :cancel, "o1", -1, _SIM_INSTRUMENT, "x")
+        @test_throws PortfolioError record_non_fill!(
+            guarded,
+            :cancel,
+            "o1",
+            -1,
+            _SIM_INSTRUMENT,
+            "x",
+        )
         @test_throws PortfolioError record_non_fill!(
             guarded,
             :cancel,
@@ -825,8 +834,11 @@ end
     end
 
     @testset "Queue fills never exceed an exact price-time oracle (randomized)" begin
-        @test _fifo_oracle([(:add, :bid, 100, 10), (:join, :bid, 100, 5, 1), (:trade, :sell, 100, 12)]) ==
-              Dict(1 => 2)
+        @test _fifo_oracle([
+            (:add, :bid, 100, 10),
+            (:join, :bid, 100, 5, 1),
+            (:trade, :sell, 100, 12),
+        ]) == Dict(1 => 2)
         @test _fifo_oracle([
             (:join, :bid, 100, 5, 1),
             (:add, :bid, 100, 10),
@@ -835,10 +847,16 @@ end
             (:trade, :sell, 100, 3),
         ]) == Dict(1 => 5)
         # Price priority across levels, both sides.
-        @test _fifo_oracle([(:join, :bid, 100, 5, 1), (:join, :bid, 101, 5, 2), (:trade, :sell, 99, 5)]) ==
-              Dict(2 => 5)
-        @test _fifo_oracle([(:join, :ask, 103, 5, 1), (:join, :ask, 102, 5, 2), (:trade, :buy, 104, 5)]) ==
-              Dict(2 => 5)
+        @test _fifo_oracle([
+            (:join, :bid, 100, 5, 1),
+            (:join, :bid, 101, 5, 2),
+            (:trade, :sell, 99, 5),
+        ]) == Dict(2 => 5)
+        @test _fifo_oracle([
+            (:join, :ask, 103, 5, 1),
+            (:join, :ask, 102, 5, 2),
+            (:trade, :buy, 104, 5),
+        ]) == Dict(2 => 5)
         limits = RiskLimits(
             max_order_lots = 100,
             max_inventory_lots = 10_000,
@@ -936,9 +954,13 @@ end
             _bd(6, 300, Ask, 99, 5),
             _bd(7, 400, Bid, 97, 1),
         ]
-        crossed = simulate!(_portfolio(), _session(through_quote), _at_sequence(buys); config = _config(10))
-        @test [(f.order_id, f.price_ticks, f.qty_lots, f.trigger) for f in crossed.fills] ==
-              [(2, 101, 5, :quote_through)]
+        crossed = simulate!(
+            _portfolio(),
+            _session(through_quote),
+            _at_sequence(buys);
+            config = _config(10),
+        )
+        @test [(f.order_id, f.price_ticks, f.qty_lots, f.trigger) for f in crossed.fills] == [(2, 101, 5, :quote_through)]
     end
 
     @testset "Orders activating after the last replayed event never fill" begin

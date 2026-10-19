@@ -509,8 +509,9 @@ function _activate!(state::_SimState, order::PaperOrder, ts::Int64)
         # earlier simulated order at this level (our own orders keep time priority).
         draw = Int64(_splitmix64(model.seed ⊻ UInt64(order.order_id)) % UInt64(displayed + 1))
         earlier = [
-            o.queue_ahead_lots for o in _resting_orders(state) if
-            o.intent.side == intent.side && o.intent.limit_price_ticks == intent.limit_price_ticks
+            o.queue_ahead_lots for
+            o in _resting_orders(state) if o.intent.side == intent.side &&
+                o.intent.limit_price_ticks == intent.limit_price_ticks
         ]
         max(draw, maximum(earlier; init = Int64(0)))
     end
@@ -603,8 +604,8 @@ function _on_trade_print!(state::_SimState, event::TradePrint)
     book_side = _own_book_side(side)
     resting = _resting_orders(state)
     hit = [
-        o for o in resting if
-        o.intent.side == side && _within_limit(side, event.price_ticks, o.intent.limit_price_ticks)
+        o for o in resting if o.intent.side == side &&
+            _within_limit(side, event.price_ticks, o.intent.limit_price_ticks)
     ]
     prices = Set{Int64}(o.intent.limit_price_ticks for o in hit)
     push!(prices, event.price_ticks)
@@ -654,8 +655,7 @@ function _on_trade_print!(state::_SimState, event::TradePrint)
             _is_live(order) || continue
             ahead = Int128(order.queue_ahead_lots) + own_before[order.order_id]
             total_after = max(Int128(0), ahead - budget)
-            order.queue_ahead_lots =
-                Int64(max(Int128(0), total_after - _own_ahead(resting, order)))
+            order.queue_ahead_lots = Int64(max(Int128(0), total_after - _own_ahead(resting, order)))
         end
         # Keep simulated-world venue size = replayed displayed size + absorbed. Venue lots
         # the simulated world traded here leave it; the replayed data is expected to remove
