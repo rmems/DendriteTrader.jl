@@ -144,6 +144,20 @@ using .Spikes
 
 export AbstractSpikeEncoder, SpikeFrame, DeltaEncoder, encode!, spike_density
 
+include("simulation/Simulation.jl")
+using .Simulation
+
+export OrderIntent, CancelIntent, RiskLimits, PaperOrder, OpenOrderView
+export FixedLatency, AbstractFeedDelay, ReceiveTimestampFeed, FixedFeedDelay
+export activation_time, cancel_effective_time, available_time
+export FeeSchedule, fill_fee, L2QueueApproximation, Fill
+export ParityScale, PortfolioError, PaperPortfolio, AuditRow, apply_fill!, record_non_fill!
+export notional_subunits, unrealized_pnl, weighted_cost_basis_ticks, in_parity_subset, reconciles
+export SimulationConfig, DecisionContext, DecisionRecord, LedgerPoint, SimulationResult
+export SimulationMetrics, simulate!, ForecastPolicy, reconciliation_errors
+export decision_records, fill_records, audit_dict
+export PARITY_SCHEMA_ID, load_parity_fixture, run_parity_fixture, parity_document
+
 """
     TradeSignal
 
