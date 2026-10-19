@@ -33,6 +33,105 @@ _fill_ts_ok(result, latency) =
 # Two-sided base book: bid 100 x 10, ask 102 x 10 at t = 100.
 _base_events() = MarketEvent[_bd(1, 100, Bid, 100, 10), _bd(2, 100, Ask, 102, 10)]
 
+# ── Independent exact-FIFO reference for one bid level (test-only oracle) ────
+# The simulated world's queue at the level is a list of segments in time priority:
+# (:venue, lots) or (order_id, lots). Venue adds append; venue cancels remove venue lots
+# from the back first (the simulator's declared conservative rule); a sell print at the
+# level consumes the head. Simulated orders never change the replayed data, so traded
+# venue lots reported by the data are not removed twice.
+function _fifo_oracle(script)
+    segments = Vector{Pair{Any, Int64}}()
+    fills = Dict{Int, Int64}()
+    next_order = 0
+    for (op, k) in script
+        if op == :add
+            push!(segments, :venue => k)
+        elseif op == :cancel
+            remaining = k
+            for index in length(segments):-1:1
+                remaining == 0 && break
+                first(segments[index]) == :venue || continue
+                take = min(remaining, last(segments[index]))
+                segments[index] = :venue => last(segments[index]) - take
+                remaining -= take
+            end
+        elseif op == :join
+            next_order += 1
+            push!(segments, next_order => k)
+        elseif op == :trade
+            remaining = k
+            for index in eachindex(segments)
+                remaining == 0 && break
+                owner, lots = segments[index]
+                take = min(remaining, lots)
+                segments[index] = owner => lots - take
+                remaining -= take
+                owner isa Int && take > 0 && (fills[owner] = get(fills, owner, 0) + take)
+            end
+        end
+        filter!(segment -> last(segment) > 0, segments)
+    end
+    return fills
+end
+
+# Deterministic small LCG so the randomized sequences are reproducible without Random.
+mutable struct _Lcg
+    state::UInt64
+end
+function _draw!(rng::_Lcg, n::Integer)
+    rng.state = rng.state * 0x5851f42d4c957f2d + 0x14057b7ef767814f
+    return Int((rng.state >> 33) % UInt64(n))
+end
+
+# Build (events, join actions, oracle script) for one random single-level sequence.
+function _random_queue_case(seed::Integer; steps::Integer = 14)
+    rng = _Lcg(UInt64(seed) * 0x9e3779b97f4a7c15 + 1)
+    events = MarketEvent[_bd(1, 10, Ask, 105, 5)]
+    script = Tuple{Symbol, Int64}[]
+    joins = Dict{Int, Any}()
+    data_level = 0
+    seq = 1
+    ts = 10
+    emit!(event) = (push!(events, event); event)
+    for _ in 1:steps
+        roll = _draw!(rng, 10)
+        ts += 10
+        if roll < 3
+            k = 1 + _draw!(rng, 6)
+            seq += 1
+            emit!(_bd(seq, ts, Bid, 100, k))
+            data_level += k
+            push!(script, (:add, k))
+        elseif roll < 5 && data_level > 0
+            k = 1 + _draw!(rng, data_level)
+            seq += 1
+            emit!(_bd(seq, ts, Bid, 100, -k))
+            data_level -= k
+            push!(script, (:cancel, k))
+        elseif roll < 8
+            k = 1 + _draw!(rng, 8)
+            seq += 1
+            emit!(_tp(seq, ts, Sell, 100, k))
+            traded = min(k, data_level)
+            if traded > 0
+                seq += 1
+                emit!(_bd(seq, ts, Bid, 100, -traded))
+                data_level -= traded
+            end
+            push!(script, (:trade, k))
+        else
+            k = 1 + _draw!(rng, 5)
+            seq += 1
+            emit!(_bd(seq, ts, Bid, 90, 1))   # observation that triggers the join
+            joins[seq] = OrderIntent(Buy, k, 100)
+            push!(script, (:join, k))
+        end
+    end
+    seq += 1
+    emit!(_bd(seq, ts + 10, Bid, 90, 1))
+    return events, joins, script
+end
+
 @testset "Paper simulation (RM-1864)" begin
     @testset "Contracts validate inputs" begin
         @test_throws ArgumentError OrderIntent(Neutral, 1, 100)
@@ -565,6 +664,98 @@ _base_events() = MarketEvent[_bd(1, 100, Bid, 100, 10), _bd(2, 100, Ask, 102, 10
         more =
             simulate!(_portfolio(), _session(bigger), _at_sequence(actions); config = _config(10))
         @test [(f.order_id, f.qty_lots) for f in more.fills] == [(1, 3), (2, 1)]
+    end
+
+    @testset "Leakage 8: venue ahead is not double-reduced when a print fills earlier simulated orders" begin
+        # A joins an empty bid level (0 venue ahead); the venue adds 10; B joins behind
+        # (FIFO: A(5), V(10), B). A print of 8 fills A 5 and B 0. 7 venue lots are still
+        # ahead of B, so a following print of 3 must not fill B. (At 3f3e63a B's venue
+        # part dropped to 2 and B was over-filled 1 lot.)
+        events = MarketEvent[
+            _bd(1, 100, Bid, 99, 1),
+            _bd(2, 100, Ask, 102, 10),
+            _bd(3, 200, Bid, 100, 10),
+            _bd(4, 300, Bid, 99, 1),
+            _tp(5, 400, Sell, 100, 8),
+            _bd(6, 400, Bid, 100, -8),
+            _tp(7, 500, Sell, 100, 3),
+            _bd(8, 500, Bid, 100, -2),
+            _bd(9, 600, Bid, 99, 1),
+        ]
+        actions = Dict{Int, Any}(2 => OrderIntent(Buy, 5, 100), 4 => OrderIntent(Buy, 5, 100))
+        result =
+            simulate!(_portfolio(), _session(events), _at_sequence(actions); config = _config(10))
+        @test [(o.order_id, o.initial_queue_ahead_lots) for o in result.orders] == [(1, 0), (2, 15)]
+        @test [(f.order_id, f.trigger_sequence, f.qty_lots) for f in result.fills] == [(1, 5, 5)]
+        @test result.orders[2].queue_ahead_lots == 4   # 7 ahead, then 3 more traded
+        @test isempty(reconciliation_errors(result))
+        # V(10), A, B ordering: A fills nothing and B's venue part drops by all 8.
+        late = MarketEvent[
+            _bd(1, 100, Bid, 100, 10),
+            _bd(2, 100, Ask, 102, 10),
+            _bd(3, 200, Bid, 99, 1),
+            _tp(4, 400, Sell, 100, 8),
+            _bd(5, 400, Bid, 100, -8),
+            _bd(6, 600, Bid, 99, 1),
+        ]
+        venue_first = simulate!(
+            _portfolio(),
+            _session(late),
+            _at_sequence(
+                Dict{Int, Any}(2 => OrderIntent(Buy, 5, 100), 3 => OrderIntent(Buy, 5, 100)),
+            );
+            config = _config(10),
+        )
+        @test isempty(venue_first.fills)
+        @test [o.queue_ahead_lots for o in venue_first.orders] == [2, 2]
+        @test [o.initial_queue_ahead_lots for o in venue_first.orders] == [10, 15]
+    end
+
+    @testset "Queue fills never exceed an exact FIFO oracle (randomized)" begin
+        @test _fifo_oracle([(:add, 10), (:join, 5), (:trade, 12)]) == Dict(1 => 2)
+        @test _fifo_oracle([(:join, 5), (:add, 10), (:join, 5), (:trade, 8), (:trade, 3)]) ==
+              Dict(1 => 5)
+        exceeded = Tuple{Int, Int, Int64, Int64}[]
+        total_sim = Int64(0)
+        total_oracle = Int64(0)
+        cases_with_fills = 0
+        for seed in 1:400
+            events, joins, script = _random_queue_case(seed)
+            result = simulate!(
+                PaperPortfolio(_SIM_INSTRUMENT, 10_000_000),
+                _session(events),
+                _at_sequence(joins);
+                config = _config(
+                    1;
+                    limits = RiskLimits(
+                        max_order_lots = 100,
+                        max_inventory_lots = 1_000,
+                        max_initial_cash_subunits = 10_000_000,
+                        max_open_orders = 64,
+                    ),
+                ),
+            )
+            expected = _fifo_oracle(script)
+            simulated = Dict{Int, Int64}()
+            for fill in result.fills
+                simulated[fill.order_id] = get(simulated, fill.order_id, 0) + fill.qty_lots
+            end
+            for (order_id, lots) in simulated
+                lots <= get(expected, order_id, 0) ||
+                    push!(exceeded, (seed, order_id, lots, get(expected, order_id, 0)))
+            end
+            isempty(simulated) || (cases_with_fills += 1)
+            total_sim += sum(values(simulated); init = 0)
+            total_oracle += sum(values(expected); init = 0)
+            @test isempty(reconciliation_errors(result))
+        end
+        @info "FIFO oracle comparison" cases_with_fills total_sim total_oracle length(exceeded)
+        isempty(exceeded) || @info "simulator over-filled vs FIFO oracle" first(exceeded, 5)
+        @test isempty(exceeded)
+        # The comparison is not vacuous: many cases fill, and the declared conservative
+        # rules fill no more than exact FIFO in aggregate.
+        @test cases_with_fills >= 100
+        @test total_sim <= total_oracle
     end
 
     @testset "Leakage 4: fees and slippage are applied exactly once" begin

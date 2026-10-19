@@ -314,6 +314,7 @@ mutable struct _SimState
     last_complete_observed::Union{Nothing, BookSnapshot}
     run::Int
     join_counter::Int64
+    absorbed::Dict{Tuple{BookSide, Int64}, Int64}
 end
 
 function _schedule!(state::_SimState, ts::Int64, rank::Int, order_id::Int64)
@@ -490,7 +491,12 @@ function _activate!(state::_SimState, order::PaperOrder, ts::Int64)
         return nothing
     end
     own = _own_book_side(intent.side)
-    displayed = _effective_size(book, state.depletion, own, intent.limit_price_ticks)
+    # Venue size at the level in the simulated world: displayed size plus print volume
+    # earlier simulated orders absorbed here (the data shows those venue lots as traded,
+    # but with our orders present they would still be resting ahead).
+    displayed =
+        _effective_size(book, state.depletion, own, intent.limit_price_ticks) +
+        get(state.absorbed, (own, intent.limit_price_ticks), Int64(0))
     ahead = if model.queue_position == :back
         displayed
     else
@@ -531,8 +537,11 @@ function _on_book_delta!(state::_SimState, event::BookDelta)
            event.price_ticks == intent.limit_price_ticks
             # Only venue size ahead can be cancelled by a venue delta; simulated orders
             # that joined earlier stay ahead until they fill or are cancelled.
+            # The cap uses simulated-world venue size (displayed + absorbed print volume),
+            # so a data decrease caused by a print our orders absorbed is not counted twice.
+            simulated_venue = displayed + get(state.absorbed, (event.side, event.price_ticks), 0)
             event.size_delta < 0 &&
-                (order.queue_ahead_lots = min(order.queue_ahead_lots, displayed))
+                (order.queue_ahead_lots = min(order.queue_ahead_lots, simulated_venue))
         elseif event.size_delta > 0 &&
                event.side == _opposite_book_side(intent.side) &&
                _strictly_through(intent.side, event.price_ticks, intent.limit_price_ticks)
@@ -574,10 +583,20 @@ function _on_trade_print!(state::_SimState, event::TradePrint)
         _strictly_through(intent.side, event.price_ticks, intent.limit_price_ticks) &&
             (order.queue_ahead_lots = 0)
         ahead = Int128(order.queue_ahead_lots) + own_ahead[order.order_id]
-        order.queue_ahead_lots = max(Int64(0), order.queue_ahead_lots - event.size)
+        # Earlier same-level simulated orders were processed first (FIFO), so their
+        # remaining size is already post-print. Whatever is still ahead after the print
+        # and is not one of them is venue size: subtracting the full print from the
+        # venue part would double-count lots that filled earlier simulated orders.
+        total_after = max(Int128(0), ahead - event.size)
+        own_after = _own_ahead(resting, order)
+        order.queue_ahead_lots = Int64(max(Int128(0), total_after - own_after))
         qty = Int64(min(order.remaining_lots, max(Int128(0), event.size - ahead), leftover_print))
         qty > 0 || continue
         leftover_print -= qty
+        if event.price_ticks == intent.limit_price_ticks
+            level = (_own_book_side(intent.side), intent.limit_price_ticks)
+            state.absorbed[level] = get(state.absorbed, level, Int64(0)) + qty
+        end
         _record_fill!(
             state,
             order,
@@ -972,6 +991,7 @@ function simulate!(
         nothing,
         working.simulation_runs,
         0,
+        Dict{Tuple{BookSide, Int64}, Int64}(),
     )
 
     venue_index = 1
