@@ -68,7 +68,7 @@ patterns; fix them only in a scoped change with tests.
 - `walk_forward_splits` (`src/experiments/Splits.jl`) counts `embargo` and `max_horizon`
   in rows, not event sequences, so the embargo is insufficient when several rows share
   an event (rules 3 and 5; see the `@test_broken` in `test/leakage_splits_labels.jl`).
-- There is no experiment runner or manifest writer yet (rule 8); see Tasks 5-7 of
+- There is no experiment runner or manifest writer yet (rule 8); see Tasks 6-7 of
   `docs/superpowers/plans/2026-09-20-snn-hft-experiments.md`.
 
 ## Verified commands
@@ -108,11 +108,14 @@ Notes:
 | `src/experiments/` | `Experiments.jl` wrapper and embargoed `walk_forward_splits` (`Splits.jl`) |
 | `src/models/` | Forecast protocol (`Interface.jl`) and baselines `StationaryModel`, `ImbalanceRule`, `RidgeClassifier` (`Baselines.jl`) |
 | `src/spikes/` | Spike encoder protocol (`Interface.jl`) and `DeltaEncoder`, `spike_density` (`DeltaEncoder.jl`) |
-| `test/runtests.jl` | Main suite. Includes `models.jl`, `spikes.jl`, `market_replay.jl`, `features.jl`, `leakage.jl`, and the gated `integration/test_dydx.jl` |
+| `src/simulation/` | Task 5 latency-aware paper simulator: `simulate!` and `DecisionContext` (`Simulation.jl`), order intents and lifecycle (`Orders.jl`), `FixedLatency` and feed-delay models (`Latency.jl`), approximate `L2QueueApproximation` fills and `FeeSchedule` (`Fills.jl`), integer `PaperPortfolio` evaluation state (`Portfolio.jl`), metrics, records and result hash (`Metrics.jl`), `metabolic-ledger.parity.v1` runner and emitter (`Parity.jl`) |
+| `test/runtests.jl` | Main suite. Includes `models.jl`, `spikes.jl`, `market_replay.jl`, `features.jl`, `leakage.jl`, `simulation.jl`, and the gated `integration/test_dydx.jl` |
+| `test/simulation.jl` | Simulator tests: named leakage testsets, reconciliation, and a randomized price-time FIFO oracle |
+| `test/fixtures/metabolic_ledger_parity_v1/` | Vendored `parity.v1` golden fixtures with `PROVENANCE.json` (source commit and sha256). Re-vendor; never edit in place |
 | `test/leakage.jl` | Leakage canaries (normalization fit/transform isolation). Extend it whenever you touch a fit/transform boundary |
 | `test/fixtures/book_session.jsonl` | Six-event synthetic replay fixture |
 | `docs/src/` | Documenter pages; `experiments.md` is the research spec and scientific requirements |
-| `docs/superpowers/plans/2026-09-20-snn-hft-experiments.md` | Implementation plan. Tasks 1-4 done; Tasks 5-7 (simulator, artifacts/manifest, shadow feed) not started |
+| `docs/superpowers/plans/2026-09-20-snn-hft-experiments.md` | Implementation plan. Tasks 1-5 done (Task 5 is the paper simulator in `src/simulation/`); Tasks 6-7 (artifacts/manifest, shadow feed) not started |
 
 ## Working rules for Claude
 

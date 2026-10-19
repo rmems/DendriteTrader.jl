@@ -136,6 +136,56 @@ forecast = only(predict!(model, FeatureFrame([rows[1]]), ForecastHorizon(1)))
 `Forecast.probabilities` use `(Down, Flat, Up)` order. They are class probabilities,
 not calibrated win probabilities, and must not be passed directly to Kelly sizing.
 
+## Latency-aware paper simulation
+
+`simulate!(portfolio, session, decide; config)` replays one `ReplaySession` as a
+deterministic event-driven **paper** simulation. It never submits orders, reads
+credentials, or touches a network, and its fills are hypothetical inferences from L2
+data, not observed executions.
+
+Four clocks are kept separate for every order: the time the information used by the
+decision became observable (`info_available_ts_ns`, from the feed-delay model —
+`ReceiveTimestampFeed` or `FixedFeedDelay`), the decision time, the activation time
+(`decision + FixedLatency.order_entry_ns`), and each fill time (never earlier than
+activation). Cancels take effect after `cancel_ns`, and fills become visible to the
+decision function only after `report_ns`.
+
+`decide(ctx::DecisionContext)` sees only the observed book snapshot, the causal
+`microstructure_features` row for it, reported inventory/cash, and reported working
+orders. The context exposes no label, target, or outcome property, and a decision
+closure that captures `MovementTarget` values is refused before the run starts.
+`ForecastPolicy` is a minimal example that wires a fitted Task 4 forecast model into
+long/flat IOC orders; it is not a strategy claim.
+
+`L2QueueApproximation` is an explicitly approximate fill model (compare the
+hftbacktest order-fill documentation). Its rules are copied into
+`SimulationResult.assumptions`: marketable orders sweep displayed liquidity within
+the limit; consumed displayed liquidity is not reused; resting orders join the back
+of their level (or a seeded position with `queue_position = :random`); only prints at
+the order's price advance the queue; trade-throughs and quote-throughs fill resting
+orders; and there is no market impact or matching-engine guarantee.
+
+`FeeSchedule` applies one integer fee per fill (positive commission, negative rebate,
+parts-per-million of notional, commissions rounded up). Declared taker slippage is in
+the fill price and reported separately; neither is charged again.
+
+`PaperPortfolio` is an integer evaluation state, not an authoritative ledger. In the
+default `:long_flat` mode it follows the `metabolic-ledger` accounting contract
+exactly (single instrument, inventory never negative, sells beyond inventory rejected
+as `unsupported_short`, truncating cost allocation, full close takes remaining cost).
+`:signed` mode is a Julia-only research extension; its results are labelled outside
+the parity subset and `parity_document` refuses to export them. Marks use only the
+venue mid at or before each step (rounded half a tick against the position); a
+one-sided book yields a `:stale` mark and no prior mid yields `:missing` (no equity is
+invented). `reconciliation_errors` independently re-derives cash, inventory, fees,
+unrealized PnL, equity and drawdown at every step.
+
+The vendored `metabolic-ledger.parity.v1` fixtures (with `PROVENANCE.json` recording
+the source commit and SHA-256 of each file) are replayed by `run_parity_fixture`, and
+`parity_document` emits a long/flat simulation in the same schema for the Rust
+harness. `decision_records` and `fill_records` emit normalized JSON-ready records for
+a later trajectory export; that export is not implemented here.
+
 ## API reference
 
 ```@docs
@@ -173,4 +223,47 @@ SpikeFrame
 encode!
 spike_density
 reset_state!
+OrderIntent
+CancelIntent
+RiskLimits
+PaperOrder
+OpenOrderView
+FixedLatency
+ReceiveTimestampFeed
+FixedFeedDelay
+FeeSchedule
+L2QueueApproximation
+Fill
+ParityScale
+PortfolioError
+PaperPortfolio
+apply_fill!
+record_non_fill!
+SimulationConfig
+DecisionContext
+DecisionRecord
+LedgerPoint
+SimulationMetrics
+SimulationResult
+simulate!
+ForecastPolicy
+reconciliation_errors
+decision_records
+fill_records
+run_parity_fixture
+parity_document
+load_parity_fixture
+PARITY_SCHEMA_ID
+AuditRow
+audit_dict
+AbstractFeedDelay
+activation_time
+cancel_effective_time
+available_time
+fill_fee
+notional_subunits
+unrealized_pnl
+weighted_cost_basis_ticks
+in_parity_subset
+reconciles
 ```
