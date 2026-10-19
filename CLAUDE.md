@@ -53,20 +53,14 @@ patterns; fix them only in a scoped change with tests.
 - `run_backtest` (`src/backtest/Backtest.jl`) fills at the signal's own price and
   timestamp (`observed_ns = signal.timestamp_ns`), so it has no order-arrival latency
   (rule 2). Treat its results as zero-latency diagnostics.
-- `execute_signal!` (`src/DendriteTrader.jl`) caps Kelly-sized units with
-  `min(position.units, engine.max_position_size)` instead of rejecting (rule 7). The
-  explicit `position_units_override` path already rejects values above the cap.
-- `size_position` (`src/sizing/SizingModule.jl`), which `execute_signal!` calls, returns
-  a zero-unit `PositionSize` with no reason when `price <= 0` or `account_balance <= 0`
-  instead of rejecting (rule 7). A zero size from it is not necessarily a real decision.
-  It also clamps `confidence` and the Kelly fraction to `[0, 1]`.
-- `kelly_fraction` and `half_kelly` (same file) silently clamp `win_rate`/`p` to `[0, 1]`
-  and floor `avg_win`/`avg_loss`/`b` at `1e-9`. The output caps (`[0, 0.20]` and
-  `[0, 1]`) are documented sizing policy; the input coercions are the gap.
 - `RidgeClassifier` prediction clamps standardized features to ±1e6
   (`_standardized_features` in `src/models/Baselines.jl`).
 - There is no experiment runner or manifest writer yet (rule 8); see Tasks 5-7 of
   `docs/superpowers/plans/2026-09-20-snn-hft-experiments.md`.
+- Since #109, the default config (`max_position_size = 10`, `payoff_ratio = 1.5`)
+  rejects most Kelly-sized signals priced below about `1000 × k` (`max_position_reject`), so
+  quick-start, ZMQ `start!`, and `BacktestConfig` defaults need an explicit cap.
+  Default-config backtests from before #109 used silently capped sizes.
 
 ## Verified commands
 

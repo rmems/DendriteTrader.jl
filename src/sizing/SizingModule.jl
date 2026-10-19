@@ -52,6 +52,9 @@ Compute a conservative half-Kelly position fraction from historical trade statis
 - `avg_win`: average profit of winning trades; must be finite and `> 0`
 - `avg_loss`: average loss of losing trades as an absolute value; must be finite and `> 0`
 
+The derived ratio `avg_win / avg_loss` must also be finite and `> 0` (it can overflow
+or underflow even when both inputs are valid).
+
 # Returns
 Half-Kelly fraction capped to `[0.0, 0.20]`. The output cap is documented sizing
 policy: a negative edge returns `0.0` and the fraction never exceeds `0.20`.
@@ -65,7 +68,16 @@ function kelly_fraction(; win_rate::Real, avg_win::Real, avg_loss::Real)::Float6
     avg_win = _require_positive("avg_win", Float64(avg_win))
     avg_loss = _require_positive("avg_loss", Float64(avg_loss))
 
+    # The derived payoff ratio can overflow to Inf or underflow to 0 even when both
+    # inputs are finite and positive (e.g. 1e308 / 1e-308); that would make the Kelly
+    # formula NaN, so reject it rather than return an uncapped or undefined fraction.
     b = avg_win / avg_loss
+    (isfinite(b) && b > 0.0) || throw(
+        ArgumentError(
+            "avg_win / avg_loss must be a finite positive ratio, got $(repr(b)) " *
+            "from avg_win=$(repr(avg_win)), avg_loss=$(repr(avg_loss))",
+        ),
+    )
     q = 1.0 - win_rate
     full = (win_rate * b - q) / b
     half = full * 0.5
@@ -168,7 +180,8 @@ Compute position sizing from neural confidence.
 - `price`: finite, `> 0`
 - `account_balance`: finite, `> 0`
 - `payoff_ratio`: finite, `> 0`
-- `kelly_scalar`: finite, `>= 0`
+- `kelly_scalar`: finite, `>= 0`. `kelly_scalar = 0` is valid and yields a zero-unit
+  position (`execute_signal!` reports it as `zero_reject`).
 
 The resulting Kelly fraction is capped to `[0, 1]` (documented sizing policy: a
 negative edge yields a zero-unit position, which is a real sizing decision).
@@ -176,7 +189,8 @@ negative edge yields a zero-unit position, which is a real sizing decision).
 # Throws
 `ArgumentError` for any invalid input. Behavior change: earlier versions returned a
 zero-unit `PositionSize` with no reason when `price <= 0` or `account_balance <= 0`,
-clamped `confidence` into `[0, 1]`, and floored `payoff_ratio` at `1e-9`.
+clamped `confidence` into `[0, 1]`, and floored `payoff_ratio` at `1e-9`. Also
+throws if the derived unit count `k * account_balance / price` overflows.
 """
 function size_position(;
     confidence::Real,
@@ -196,6 +210,13 @@ function size_position(;
     k = clamp(full_k * kelly_scalar, 0.0, 1.0)
 
     units = (k * account_balance) / price
+    # The derived unit count can overflow even when every input is finite and valid.
+    isfinite(units) || throw(
+        ArgumentError(
+            "derived units must be finite, got $(repr(units)) from " *
+            "account_balance=$(repr(account_balance)), price=$(repr(price))",
+        ),
+    )
     risk_pct = (units * price) / account_balance * 100.0
 
     return PositionSize(units, k, p, risk_tier(p), risk_pct)

@@ -288,6 +288,20 @@ include("spikes.jl")
         @test_throws ArgumentError kelly_fraction(win_rate = 0.5, avg_win = 1.0, avg_loss = 0.0)
         @test_throws ArgumentError kelly_fraction(win_rate = 0.5, avg_win = 1.0, avg_loss = -2.0)
         @test_throws ArgumentError kelly_fraction(win_rate = 0.5, avg_win = Inf, avg_loss = 1.0)
+        # Both inputs finite and positive, but the derived ratio overflows (Inf) or
+        # underflows (0.0); previously this produced NaN instead of a capped fraction.
+        @test isinf(1e308 / 1e-308)
+        @test 1e-308 / 1e308 == 0.0
+        @test_throws ArgumentError kelly_fraction(
+            win_rate = 0.5,
+            avg_win = 1e308,
+            avg_loss = 1e-308,
+        )
+        @test_throws ArgumentError kelly_fraction(
+            win_rate = 0.5,
+            avg_win = 1e-308,
+            avg_loss = 1e308,
+        )
         # Boundary values remain valid; the output cap [0, 0.20] is policy and stays.
         @test kelly_fraction(win_rate = 1.0, avg_win = 1.0, avg_loss = 1.0) == 0.20
         @test kelly_fraction(win_rate = 0.0, avg_win = 1.0, avg_loss = 1.0) == 0.0
@@ -358,6 +372,12 @@ include("spikes.jl")
             account_balance = 10_000.0,
             kelly_scalar = -0.5,
         )
+        # Valid finite inputs whose derived unit count overflows are rejected.
+        @test_throws ArgumentError size_position(
+            confidence = 0.9,
+            price = 1e-308,
+            account_balance = 1e308,
+        )
         # A negative edge is a real zero-size decision, not a rejection.
         no_edge = size_position(confidence = 0.30, price = 100.0, account_balance = 10_000.0)
         @test no_edge.units == 0.0
@@ -410,6 +430,7 @@ include("spikes.jl")
         dec_ok = execute_signal!(roomy, sig, 10_000.0)
         @test dec_ok.executed
         @test dec_ok.position_units ≈ k_model.units
+        # applied_fraction = units * price / balance = (k * balance / price) * price / balance = k
         @test dec_ok.applied_fraction ≈ k_model.kelly_fraction
         @test dec_ok.kelly_fraction ≈ k_model.kelly_fraction
     end
@@ -460,6 +481,16 @@ include("spikes.jl")
         bad_close = execute_signal!(close_engine, bad_price_sig, 0.0; position_units_override = 5.0)
         @test !bad_close.executed
         @test startswith(bad_close.reason, "invalid_sizing_input:")
+        # The carve-out covers finite balances only: a non-finite balance is rejected
+        # even with an override.
+        for nonfinite in (-Inf, Inf, NaN)
+            nf = execute_signal!(close_engine, sig, nonfinite; position_units_override = 5.0)
+            @test !nf.executed
+            @test startswith(nf.reason, "invalid_sizing_input:")
+            @test occursin("account_balance", nf.reason)
+            @test close_engine.events[end].event_type == "sizing_reject"
+        end
+        @test close_engine.positions["MARKET-D"] == 5.0
     end
 
     @testset "ExecutionEngine — zero-edge sizing is a zero_reject" begin
@@ -469,6 +500,28 @@ include("spikes.jl")
         @test !dec.executed
         @test dec.reason == "zero-sized position"
         @test engine.events[end].event_type == "zero_reject"
+    end
+
+    @testset "kelly_scalar = 0 is valid and yields a zero_reject" begin
+        zero_scaled = size_position(
+            confidence = 0.9,
+            price = 90.0,
+            account_balance = 10_000.0,
+            kelly_scalar = 0.0,
+        )
+        @test zero_scaled.units == 0.0
+        @test zero_scaled.kelly_fraction == 0.0
+
+        # execute_signal! sizes with the default kelly_scalar; feed its zero-unit path the
+        # same way a kelly_scalar = 0 result would reach it (zero units, valid inputs).
+        engine = ExecutionEngine(max_position_size = 1_000.0)
+        sig = TradeSignal("MARKET-D", Buy, 90.0, 1.0, 0.90f0, 0)
+        dec = execute_signal!(engine, sig, 10_000.0; position_units_override = zero_scaled.units)
+        @test !dec.executed
+        @test dec.reason == "zero-sized position"
+        @test engine.events[end].event_type == "zero_reject"
+        @test engine.rejected_signals == 1
+        @test isempty(engine.positions)
     end
 
     @testset "ExecutionEngine — portfolio exposure cap" begin

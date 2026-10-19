@@ -34,7 +34,10 @@ explicit reason, never silently clamped or coerced. Public signatures are unchan
   `payoff_ratio` at `1e-9`. A negative edge still returns a zero-unit position.
 - `kelly_fraction` throws `ArgumentError` when `win_rate` is outside `[0, 1]` or
   non-finite, or `avg_win`/`avg_loss` is non-positive or non-finite (previously clamped
-  and floored at `1e-9`). The `[0, 0.20]` output cap is unchanged documented policy.
+  and floored at `1e-9`). It also throws when the derived ratio `avg_win / avg_loss`
+  overflows or underflows (previously the result was `NaN`). The `[0, 0.20]` output cap is
+  unchanged documented policy. `size_position` likewise throws if the derived unit count
+  overflows. `kelly_scalar = 0` stays valid and yields a zero-unit position (`zero_reject`).
 - `half_kelly` (and `from_confidence`, which delegates to it) throws `ArgumentError` when
   `p` is outside `[0, 1]` or non-finite, or `b` is non-positive or non-finite (previously
   clamped and floored at `1e-9`). The `[0, 1]` output cap is unchanged.

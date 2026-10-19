@@ -745,7 +745,12 @@ An invalid `position_units_override` (non-finite, negative, or above
 `max_position_size`) is a caller error and throws `ArgumentError`. When an override
 is supplied and `account_balance` is finite but `<= 0`, Kelly sizing is skipped (the
 override quantity does not depend on it) so an existing position can still be closed;
-the price is still validated and the reported `kelly_fraction` is `0.0`.
+the price is still validated and the reported `kelly_fraction` is `0.0`. The carve-out
+covers a finite balance `<= 0` only: a non-finite balance (`NaN`, `±Inf`) means the
+accounting is already broken and is rejected as `sizing_reject` even with an override.
+
+A valid input that yields zero Kelly units, such as no edge or `kelly_scalar = 0`, is a
+real sizing decision and is reported as `zero_reject`, not as `sizing_reject`.
 
 Behavior change: earlier versions silently capped Kelly-sized units with
 `min(units, max_position_size)` and executed the reduced size, and treated
