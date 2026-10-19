@@ -15,12 +15,12 @@ CI runs Julia 1.13 only.
 | Command | Status |
 |---|---|
 | `julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'` | not run to completion (timed out after 500 s on a cold depot; CI runs this on Julia 1.13) |
-| `julia --project=. -e 'using Pkg; Pkg.add("JuliaFormatter"); using JuliaFormatter; format(".", check=true)'` | not run (needs the instantiated environment above; CI `format` job) |
+| `julia --project=. -e 'using Pkg; Pkg.add("JuliaFormatter"); using JuliaFormatter; format(".", check=true)'` | not run (the test attempt above timed out, so no clean run was done here; the CI `format` job runs it without a separate `Pkg.instantiate`) |
 | `julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'` then `julia --project=docs docs/make.jl` | not run (disk nearly full; `docs.yml` runs it) |
 | `DYDX_INTEGRATION=true julia --project=. -e 'include("test/integration/test_dydx.jl")'` | not run (calls the public dYdX v4 network; `integration.yml` runs it daily) |
 
 - `Pkg.add("JuliaFormatter")` edits `Project.toml`/`Manifest.toml`; check `git diff` and do not commit that change.
-- `Manifest.toml` is gitignored, so `Pkg.test()` resolves fresh each time.
+- `Manifest.toml` is gitignored, so CI resolves fresh; a local checkout reuses any `Manifest.toml` already present, so delete it for a clean resolve.
 - `Project.toml` lists `JuliaFormatter` under `[extras]` but not in `[targets]`, so it is not a test dependency.
 
 ## Architecture map
