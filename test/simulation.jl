@@ -1177,6 +1177,31 @@ end
             result.result_hash,
         )
         @test !isempty(reconciliation_errors(tampered))
+        # A ledger point whose unrealized PnL was erased is reported, not a MethodError.
+        erased = map(result.ledger) do point
+            values = Any[getfield(point, name) for name in fieldnames(LedgerPoint)]
+            values[findfirst(==(:unrealized_pnl_subunits), fieldnames(LedgerPoint))] = nothing
+            LedgerPoint(values...)
+        end
+        unmarked = SimulationResult(
+            result.assumptions,
+            result.decisions,
+            result.orders,
+            result.fills,
+            erased,
+            result.audit,
+            result.metrics,
+            result.in_parity_subset,
+            result.initial_cash_subunits,
+            result.initial_inventory_lots,
+            result.initial_total_cost_subunits,
+            result.instrument,
+            result.scale,
+            result.result_hash,
+        )
+        unmarked_errors = reconciliation_errors(unmarked)
+        @test any(e -> occursin("unrealized PnL missing", e), unmarked_errors)
+        @test length(unmarked_errors) >= length(erased)
         # Rebate: a negative maker rate credits cash once.
         @test fill_fee(FeeSchedule(maker_fee_ppm = -100), 50_000, :maker) == -5
         @test fill_fee(FeeSchedule(maker_fee_ppm = -100), 49_999, :maker) == -4
@@ -1696,6 +1721,51 @@ end
         @test signed.assumptions["accounting"]["parity_subset"] == false
         @test_throws PortfolioError parity_document(signed, "signed")
         @test_throws PortfolioError parity_document(long_flat, "bad_mark"; mark_price_ticks = 0)
+        # A hand-built result carrying an idempotent-replay audit row is rejected explicitly
+        # rather than exported with events and expected audit out of step.
+        replay_row = let row = first(r for r in long_flat.audit if r.kind == :fill)
+            AuditRow(
+                row.event_time_ns,
+                :fill,
+                row.fill_id,
+                nothing,
+                row.instrument,
+                row.side,
+                row.price_ticks,
+                row.qty_lots,
+                row.fee_subunits,
+                0,
+                row.cash_after,
+                row.inventory_after,
+                row.total_cost_after,
+                "idempotent_replay",
+                true,
+            )
+        end
+        with_replay = SimulationResult(
+            long_flat.assumptions,
+            long_flat.decisions,
+            long_flat.orders,
+            long_flat.fills,
+            long_flat.ledger,
+            vcat(long_flat.audit, [replay_row]),
+            long_flat.metrics,
+            long_flat.in_parity_subset,
+            long_flat.initial_cash_subunits,
+            long_flat.initial_inventory_lots,
+            long_flat.initial_total_cost_subunits,
+            long_flat.instrument,
+            long_flat.scale,
+            long_flat.result_hash,
+        )
+        replay_error = try
+            parity_document(with_replay, "replay")
+            nothing
+        catch error
+            error
+        end
+        @test replay_error isa PortfolioError && replay_error.kind == :unsupported_subset
+        @test run_parity_fixture(JSON.parse(JSON.json(parity_document(long_flat, "ok"))))[1]
         @test_throws PortfolioError parity_document(long_flat, "bad_mark"; mark_price_ticks = -5)
         @test isempty(reconciliation_errors(signed))
         # Flip accounting: buy 4 @ 100, sell 6 @ 110 with fee 6 split 4 / 2 across legs.

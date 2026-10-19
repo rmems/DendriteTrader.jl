@@ -214,8 +214,15 @@ function parity_document(
     result.initial_inventory_lots == 0 && result.initial_total_cost_subunits == 0 ||
         _fail(:unsupported_subset, "parity.v1 documents must start flat")
     events = Any[]
+    # The simulator never emits idempotent-replay rows (a repeated simulator fill id is a
+    # duplicate_fill_conflict). A result that carries one was built or edited by hand, and
+    # dropping it from `events` while keeping it in the expected audit would make the
+    # document contradict itself, so reject it instead.
+    any(row -> row.idempotent_replay, result.audit) && _fail(
+        :unsupported_subset,
+        "parity_document cannot export idempotent_replay audit rows; simulator results never contain them",
+    )
     for row in result.audit
-        row.idempotent_replay && continue
         if row.kind == :fill
             push!(
                 events,

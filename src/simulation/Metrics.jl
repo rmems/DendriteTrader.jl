@@ -287,6 +287,12 @@ function reconciliation_errors(result::SimulationResult)
                 "step $(point.step): unrealized $(point.unrealized_pnl_subunits) != $expected",
             )
         end
+        if point.unrealized_pnl_subunits === nothing
+            # Already reported above for flat or marked steps; equity, peak and drawdown
+            # cannot be re-derived without it, so record and move on instead of throwing.
+            push!(errors, "step $(point.step): unrealized PnL missing; equity checks skipped")
+            continue
+        end
         equity =
             Int128(point.cash_subunits) + point.total_cost_subunits + point.unrealized_pnl_subunits
         point.equity_subunits == equity ||
