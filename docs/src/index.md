@@ -1,8 +1,8 @@
 # DendriteTrader.jl
 
-[![CI](https://github.com/Limen-Neural/DendriteTrader.jl/actions/workflows/ci.yml/badge.svg)](https://github.com/Limen-Neural/DendriteTrader.jl/actions/workflows/ci.yml)
-[![Docs](https://github.com/Limen-Neural/DendriteTrader.jl/actions/workflows/docs.yml/badge.svg)](https://limen-neural.github.io/DendriteTrader.jl)
-[![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-blue.svg)](https://github.com/Limen-Neural/DendriteTrader.jl/blob/main/LICENSE)
+[![CI](https://github.com/rmems/DendriteTrader.jl/actions/workflows/ci.yml/badge.svg)](https://github.com/rmems/DendriteTrader.jl/actions/workflows/ci.yml)
+[![Docs](https://github.com/rmems/DendriteTrader.jl/actions/workflows/docs.yml/badge.svg)](https://rmems.github.io/DendriteTrader.jl)
+[![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-blue.svg)](https://github.com/rmems/DendriteTrader.jl/blob/main/LICENSE)
 
 Julia strategy, diagnostics, paper-trading, and control-plane layer for neural trading systems.
 
@@ -56,9 +56,9 @@ println(decision.executed, " — ", decision.reason)
 ## Installation
 
 ```julia
-] add https://github.com/Limen-Neural/DendriteTrader.jl
+] add https://github.com/rmems/DendriteTrader.jl
 ```
 
 ## License
 
-Dual-licensed under MIT or Apache-2.0. See [LICENSE](https://github.com/Limen-Neural/DendriteTrader.jl/blob/main/LICENSE).
+Dual-licensed under MIT or Apache-2.0. See [LICENSE](https://github.com/rmems/DendriteTrader.jl/blob/main/LICENSE).

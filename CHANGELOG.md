@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Docs home badges, install URL, and license link use `rmems/DendriteTrader.jl`. The `0.1.0` release link uses that repository as well.
 - License: switched from GPL-3.0-only to dual MIT OR Apache-2.0.
   - Added `LICENSE-MIT` and `LICENSE-APACHE-2.0`.
   - Updated top-level `LICENSE` to declare dual licensing.
@@ -36,4 +37,4 @@ See issues #10 and #11.
 - **dYdX v4 REST client**: REST API client for dYdX v4 decentralized exchange integration.
 - **Paper position tracking**: Simulated position tracking for paper trading without live execution.
 
-[0.1.0]: https://github.com/Limen-Neural/DendriteTrader.jl/releases/tag/v0.1.0
+[0.1.0]: https://github.com/rmems/DendriteTrader.jl/releases/tag/v0.1.0
