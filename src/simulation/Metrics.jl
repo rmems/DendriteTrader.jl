@@ -6,8 +6,12 @@ function _metrics(state)
     orders = state.orders
     fills = state.fills
     accepted = [o for o in orders if o.status != :rejected]
-    accepted_lots = sum((o.intent.qty_lots for o in accepted); init = Int64(0))
-    filled_lots = sum((f.qty_lots for f in fills); init = Int64(0))
+    accepted_lots = _checked_i64(
+        sum((Int128(o.intent.qty_lots) for o in accepted); init = Int128(0)),
+        "accepted lots",
+    )
+    filled_lots =
+        _checked_i64(sum((Int128(f.qty_lots) for f in fills); init = Int128(0)), "filled lots")
     final = last(state.ledger)
     p = state.portfolio
     return SimulationMetrics(
@@ -316,6 +320,26 @@ end
 True when the run used a zero order-entry, cancel or report latency
 (`assumptions["latency"]["diagnostic_zero_latency"]`). Such a run is a diagnostic, not
 evidence (CLAUDE.md rule 2). The flag is part of `result_hash`.
+
+A missing label never reads as "not a diagnostic": if the flag is absent but the three
+latency components are recorded, the label is recomputed from them; otherwise this throws
+an `ArgumentError` naming what is missing.
 """
-is_zero_latency_diagnostic(result::SimulationResult) =
-    result.assumptions["latency"]["diagnostic_zero_latency"] === true
+function is_zero_latency_diagnostic(result::SimulationResult)
+    latency = get(result.assumptions, "latency", nothing)
+    latency isa AbstractDict ||
+        throw(ArgumentError("result assumptions have no \"latency\" record; cannot label the run"))
+    flag = get(latency, "diagnostic_zero_latency", nothing)
+    flag isa Bool && return flag
+    flag === nothing ||
+        throw(ArgumentError("diagnostic_zero_latency must be a Bool, got $(repr(flag))"))
+    components = ("order_entry_ns", "cancel_ns", "report_ns")
+    values = [get(latency, name, nothing) for name in components]
+    all(v -> v isa Integer && !(v isa Bool) && v >= 0, values) || throw(
+        ArgumentError(
+            "latency record lacks diagnostic_zero_latency and complete non-negative " *
+            "order_entry_ns/cancel_ns/report_ns; cannot label the run",
+        ),
+    )
+    return any(==(0), values)
+end

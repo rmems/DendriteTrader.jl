@@ -1072,6 +1072,147 @@ end
             config = _config(50),
         )
         @test only(early.fills).exchange_ts_ns == 150
+        # Activation exactly at the final event's timestamp activates against the book as
+        # of that event: it may take displayed liquidity, and a passive remainder cannot
+        # fill (it expires at session end). L = 100 from t = 100 activates at t = 200.
+        at_end = simulate!(
+            _portfolio(),
+            _session(events),
+            _at_sequence(2, OrderIntent(Buy, 3, 102; time_in_force = :ioc));
+            config = _config(100),
+        )
+        @test [(f.exchange_ts_ns, f.liquidity, f.qty_lots) for f in at_end.fills] == [(200, :taker, 3)]
+        @test _fill_ts_ok(at_end, 100)
+        passive_end = simulate!(
+            _portfolio(),
+            _session(events),
+            _at_sequence(2, OrderIntent(Buy, 3, 100));
+            config = _config(100),
+        )
+        @test isempty(passive_end.fills)
+        @test only(passive_end.orders).terminal_reason == "session_end_unfilled"
+        # Control: one nanosecond later there is no book state at or after activation.
+        after_end = simulate!(
+            _portfolio(),
+            _session(events),
+            _at_sequence(2, OrderIntent(Buy, 3, 102; time_in_force = :ioc));
+            config = _config(101),
+        )
+        @test isempty(after_end.fills)
+        @test only(after_end.orders).terminal_reason == "activation_after_session_end"
+    end
+
+    @testset "Leakage 11: slippage never lets a crossed limit rest and earn maker fills" begin
+        # Displayed ask 102 x5 (bid 100). A buy limited at 102 with 1 tick of taker slippage
+        # cannot take (102 + 1 > 102), but its raw limit crosses the touch. At 1de2208 it
+        # rested on the ask and filled as maker on later prints, so turning slippage on made
+        # results better. Mirror: displayed bid 100 x5, sell limited at 100.
+        function run(side, post_only, slip)
+            buy = side == Buy
+            events = MarketEvent[
+                _bd(1, 100, Bid, 100, buy ? 10 : 5),
+                _bd(2, 100, Ask, 102, buy ? 5 : 10),
+                _bd(3, 200, Bid, 98, 1),
+                buy ? _tp(4, 300, Sell, 102, 3) : _tp(4, 300, Buy, 100, 3),
+                buy ? _tp(5, 310, Sell, 101, 2) : _tp(5, 310, Buy, 101, 2),
+                _bd(6, 400, Bid, 98, 1),
+            ]
+            limit = buy ? 102 : 100
+            return simulate!(
+                _portfolio(mode = buy ? :long_flat : :signed),
+                _session(events),
+                _at_sequence(2, OrderIntent(side, 1, limit; post_only = post_only));
+                config = _config(
+                    10;
+                    fees = FeeSchedule(maker_fee_ppm = -5_000, taker_fee_ppm = 5_000),
+                    fill_model = L2QueueApproximation(taker_slippage_ticks = slip),
+                ),
+            )
+        end
+        for side in (Buy, Sell), post_only in (true, false)
+            slipped = run(side, post_only, 1)
+            order = only(slipped.orders)
+            @test isempty(slipped.fills)
+            @test order.terminal_reason ==
+                  (post_only ? "post_only_would_take" : "cross_unfillable_after_slippage")
+            @test !order.resting
+            @test isempty(reconciliation_errors(slipped))
+            # Control: without slippage the post-only order is rejected and the plain order
+            # takes the touch as taker; neither ever fills as maker.
+            control = run(side, post_only, 0)
+            if post_only
+                @test isempty(control.fills)
+                @test only(control.orders).terminal_reason == "post_only_would_take"
+            else
+                @test [(f.liquidity, f.price_ticks) for f in control.fills] == [(:taker, side == Buy ? 102 : 100)]
+            end
+        end
+    end
+
+    @testset "No maker fill at or through the opposite touch displayed at activation (randomized)" begin
+        rng = _Lcg(0x11)
+        checked = 0
+        rejected = 0
+        for case in 1:300
+            bid = 98 + _draw!(rng, 3)
+            ask = bid + 1 + _draw!(rng, 3)
+            slip = _draw!(rng, 3)
+            side = _draw!(rng, 2) == 0 ? Buy : Sell
+            limit = side == Buy ? ask - 1 + _draw!(rng, 4) : bid + 1 - _draw!(rng, 4)
+            post_only = _draw!(rng, 2) == 0
+            events = MarketEvent[
+                _bd(1, 100, Bid, bid, 3 + _draw!(rng, 5)),
+                _bd(2, 100, Ask, ask, 3 + _draw!(rng, 5)),
+            ]
+            seq = 2
+            for k in 1:6
+                seq += 1
+                if _draw!(rng, 2) == 0
+                    events = vcat(
+                        events,
+                        MarketEvent[_tp(
+                            seq,
+                            100 + 50k,
+                            Sell,
+                            bid - _draw!(rng, 2),
+                            1 + _draw!(rng, 6),
+                        )],
+                    )
+                else
+                    events = vcat(
+                        events,
+                        MarketEvent[_tp(
+                            seq,
+                            100 + 50k,
+                            Buy,
+                            ask + _draw!(rng, 2),
+                            1 + _draw!(rng, 6),
+                        )],
+                    )
+                end
+            end
+            push!(events, _bd(seq + 1, 500, Bid, 90, 1))
+            result = simulate!(
+                _portfolio(mode = :signed),
+                _session(events),
+                _at_sequence(2, OrderIntent(side, 2, limit; post_only = post_only));
+                config = _config(
+                    10;
+                    fill_model = L2QueueApproximation(taker_slippage_ticks = slip),
+                ),
+            )
+            order = only(result.orders)
+            crossed = side == Buy ? limit >= ask : limit <= bid
+            for fill in result.fills
+                fill.liquidity == :maker || continue
+                checked += 1
+                @test side == Buy ? fill.price_ticks < ask : fill.price_ticks > bid
+            end
+            crossed && post_only && (@test isempty(result.fills); rejected += 1)
+            crossed && @test !any(f -> f.liquidity == :maker, result.fills)
+            @test isempty(reconciliation_errors(result))
+        end
+        @test checked >= 20 && rejected >= 20
     end
 
     @testset "Mutating ctx.snapshot cannot change later features or results" begin
@@ -1137,6 +1278,40 @@ end
         relabelled["latency"]["diagnostic_zero_latency"] = false
         @test bytes2hex(sha256(payload(zero.assumptions))) == zero.result_hash
         @test bytes2hex(sha256(payload(relabelled))) != zero.result_hash
+        # A missing label never reads as "not a diagnostic".
+        relabel(f) = SimulationResult(
+            f(deepcopy(zero.assumptions)),
+            zero.decisions,
+            zero.orders,
+            zero.fills,
+            zero.ledger,
+            zero.audit,
+            zero.metrics,
+            zero.in_parity_subset,
+            zero.initial_cash_subunits,
+            zero.initial_inventory_lots,
+            zero.initial_total_cost_subunits,
+            zero.instrument,
+            zero.scale,
+            zero.result_hash,
+        )
+        no_flag = relabel(a -> (delete!(a["latency"], "diagnostic_zero_latency"); a))
+        @test is_zero_latency_diagnostic(no_flag)   # recomputed from the zero components
+        @test_throws ArgumentError is_zero_latency_diagnostic(
+            relabel(a -> (delete!(a, "latency"); a)),
+        )
+        @test_throws ArgumentError is_zero_latency_diagnostic(
+            relabel(
+                a -> (
+                    delete!(a["latency"], "diagnostic_zero_latency");
+                    delete!(a["latency"], "report_ns");
+                    a
+                ),
+            ),
+        )
+        @test_throws ArgumentError is_zero_latency_diagnostic(
+            relabel(a -> (a["latency"]["diagnostic_zero_latency"] = "yes"; a)),
+        )
         # The parity.v1 export does not carry the flag, so it stays inside the v1 schema.
         document = parity_document(zero, "zero")
         @test !occursin("diagnostic", JSON.json(document))
@@ -1418,6 +1593,35 @@ end
             result.ledger,
         )
         @test result.metrics.max_drawdown_subunits > 0
+        # Lot totals are checked sums: an Int64 overflow is a typed error, not wraparound.
+        overflow_state = (
+            ledger = result.ledger,
+            orders = [result.orders[1], result.orders[1]],
+            fills = result.fills,
+            portfolio = _portfolio(),
+            decision_counter = 1,
+        )
+        big = copy(result.orders[1])
+        big_intent = OrderIntent(Buy, typemax(Int64), 1)
+        huge_orders = [
+            DendriteTrader.Simulation.PaperOrder(
+                (
+                    getfield(big, name) for
+                    name in fieldnames(DendriteTrader.Simulation.PaperOrder)
+                )...,
+            ) for _ in 1:2
+        ]
+        for o in huge_orders
+            o.intent = big_intent
+            o.status = :expired
+        end
+        lot_error = try
+            DendriteTrader.Simulation._metrics(merge(overflow_state, (orders = huge_orders,)))
+            nothing
+        catch error
+            error
+        end
+        @test lot_error isa PortfolioError && lot_error.kind == :out_of_range
         @test result.metrics.max_drawdown_subunits ==
               maximum(p.drawdown_subunits for p in result.ledger)
         @test count(p -> p.kind == :venue_event, result.ledger) == length(events)

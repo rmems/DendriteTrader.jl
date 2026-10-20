@@ -59,7 +59,12 @@ Assumptions, all recorded in `SimulationResult.assumptions`:
    `decision_ts + order_entry_ns`; venue events stamped at the activation instant are
    applied first. It never trades against a print that occurred before activation.
 2. Taking: a marketable order sweeps *displayed* opposite levels inside its limit at
-   each level's price (plus `taker_slippage_ticks` adverse ticks), as taker.
+   each level's price (plus `taker_slippage_ticks` adverse ticks), as taker. Whether an
+   order crosses is judged on its raw limit: a post-only order whose limit is at or
+   through displayed opposite size is rejected (`post_only_would_take`) whatever the
+   slippage, and an order whose remaining size still crosses after the sweep (because
+   slippage put those levels outside the limit) is terminated
+   (`cross_unfillable_after_slippage`). A crossed order never rests.
 3. Depletion: displayed liquidity the simulator consumed stays unavailable at that
    price until the replayed level is fully removed; new displayed size adds back.
 4. Joining: a resting order joins the **back** of its price level
@@ -116,6 +121,7 @@ const _FILL_ASSUMPTIONS = (
     "prints walk the hit side best price first; each level's whole FIFO queue is consumed first",
     "displayed liquidity strictly through a resting limit fills it as maker at the limit, best price first",
     "a locked quote at the resting limit does not fill",
+    "an order whose raw limit crosses displayed opposite size never rests; post-only crossing is rejected",
     "no market impact; no venue matching-engine guarantee",
 )
 
@@ -181,7 +187,21 @@ _strictly_through(side::TradeSide, price::Int64, limit::Int64) =
     side == Buy ? price < limit : price > limit
 _slipped(side::TradeSide, price::Int64, slip::Int64) = side == Buy ? price + slip : price - slip
 
-"""True if `order` would take liquidity against displayed opposite size right now."""
+"""
+True if the raw limit crosses (or locks) displayed opposite size with effective size > 0,
+ignoring slippage. Such an order can never rest: it either takes, is rejected (post-only),
+or is terminated, so it can never earn maker economics at or through the opposite touch.
+"""
+function _crosses_book(book, depletion, intent::OrderIntent)
+    opposite = _opposite_book_side(intent.side)
+    for price in _opposite_levels(book, intent.side)
+        _within_limit(intent.side, price, intent.limit_price_ticks) || return false
+        _effective_size(book, depletion, opposite, price) > 0 && return true
+    end
+    return false
+end
+
+"""True if `order` can take displayed opposite size within its limit after slippage."""
 function _is_marketable(book, depletion, model::L2QueueApproximation, intent::OrderIntent)
     opposite = _opposite_book_side(intent.side)
     for price in _opposite_levels(book, intent.side)

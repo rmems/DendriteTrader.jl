@@ -466,11 +466,13 @@ function _activate!(state::_SimState, order::PaperOrder, ts::Int64)
     model = state.config.fill_model
     intent = order.intent
     book = state.venue
+    # Post-only is judged on the raw limit, not the slipped price: a limit at or through
+    # the displayed opposite touch would take, whatever the declared slippage.
+    if intent.post_only && _crosses_book(book, state.depletion, intent)
+        _terminate!(state, order, :rejected, :reject, ts, "post_only_would_take")
+        return nothing
+    end
     if _is_marketable(book, state.depletion, model, intent)
-        if intent.post_only
-            _terminate!(state, order, :rejected, :reject, ts, "post_only_would_take")
-            return nothing
-        end
         opposite = _opposite_book_side(intent.side)
         for price in _opposite_levels(book, intent.side)
             order.remaining_lots == 0 && break
@@ -494,6 +496,13 @@ function _activate!(state::_SimState, order::PaperOrder, ts::Int64)
         end
     end
     order.remaining_lots == 0 && return nothing
+    # Never rest a crossed order. When slippage makes the remaining crossed levels
+    # untakeable within the limit, resting would sit on or through the displayed opposite
+    # touch and later earn maker fills / rebates there (more favourable than taking).
+    if _crosses_book(book, state.depletion, intent)
+        _terminate!(state, order, :cancelled, :cancel, ts, "cross_unfillable_after_slippage")
+        return nothing
+    end
     if intent.time_in_force == :ioc
         _terminate!(state, order, :cancelled, :cancel, ts, "ioc_remainder")
         return nothing
@@ -1094,6 +1103,7 @@ function simulate!(
         Dict{Tuple{BookSide, Int64}, Int64}(),
     )
 
+    last_venue_ts = last(events).exchange_ts_ns
     venue_index = 1
     observe_index = 1
     n = length(events)
@@ -1125,9 +1135,13 @@ function simulate!(
         elseif kind == :action
             action = popfirst!(state.actions)
             order = state.orders[action.order_id]
-            if action.rank == _RANK_ACTIVATION && venue_index > n
-                # No venue event is left at or after the activation time, so there is no
-                # observed book state to trade against; the order never becomes active.
+            if action.rank == _RANK_ACTIVATION && venue_index > n && ts > last_venue_ts
+                # The activation is later than every replayed venue event, so there is no
+                # book state at or after it to trade against; the order never becomes
+                # active. An activation exactly at the final event's timestamp does activate
+                # (venue events at that instant are applied first): it may take displayed
+                # liquidity as of that state, and any remainder rests and then expires at
+                # session end, so it can never get a passive fill.
                 _is_live(order) && _terminate!(
                     state,
                     order,
