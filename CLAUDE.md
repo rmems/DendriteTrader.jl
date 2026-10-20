@@ -65,6 +65,9 @@ patterns; fix them only in a scoped change with tests.
   `[0, 1]`) are documented sizing policy; the input coercions are the gap.
 - `RidgeClassifier` prediction clamps standardized features to ±1e6
   (`_standardized_features` in `src/models/Baselines.jl`).
+- `walk_forward_splits` (`src/experiments/Splits.jl`) counts `embargo` and `max_horizon`
+  in rows, not event sequences, so the embargo is insufficient when several rows share
+  an event (rules 3 and 5; see the `@test_broken` in `test/leakage_splits_labels.jl`).
 - There is no experiment runner or manifest writer yet (rule 8); see Tasks 5-7 of
   `docs/superpowers/plans/2026-09-20-snn-hft-experiments.md`.
 
