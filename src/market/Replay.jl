@@ -80,9 +80,7 @@ function _trade_side(value::AbstractString)
     throw(ArgumentError("aggressor_side must be BUY or SELL"))
 end
 
-const _KNOWN_VENUE_SYMBOLS = Dict{String, Symbol}(
-    "SIM" => :SIM,
-)
+const _KNOWN_VENUE_SYMBOLS = Dict{String, Symbol}("SIM" => :SIM)
 
 function _decode_venue(venue_string::AbstractString)
     sym = get(_KNOWN_VENUE_SYMBOLS, venue_string, nothing)
