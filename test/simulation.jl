@@ -1100,6 +1100,49 @@ end
         @test dirty.result_hash == clean.result_hash
     end
 
+    @testset "Zero-latency runs are labelled as diagnostics" begin
+        events = vcat(_base_events(), MarketEvent[_bd(3, 200, Bid, 100, 1)])
+        run(latency) = simulate!(
+            _portfolio(),
+            _session(events),
+            _at_sequence(2, OrderIntent(Buy, 1, 102; time_in_force = :ioc));
+            config = SimulationConfig(; latency = latency),
+        )
+        zero = run(FixedLatency(0))
+        one = run(FixedLatency(1))
+        @test is_zero_latency_diagnostic(zero)
+        @test zero.assumptions["latency"]["zero_latency_components"] ==
+              ["order_entry_ns", "cancel_ns", "report_ns"]
+        @test !is_zero_latency_diagnostic(one)
+        @test one.assumptions["latency"]["diagnostic_zero_latency"] === false
+        @test isempty(one.assumptions["latency"]["zero_latency_components"])
+        # Each component alone triggers it.
+        @test zero_latency_components(FixedLatency(5; cancel_ns = 0)) == ["cancel_ns"]
+        @test zero_latency_components(FixedLatency(5; report_ns = 0)) == ["report_ns"]
+        @test is_zero_latency_diagnostic(run(FixedLatency(5; report_ns = 0)))
+        @test isempty(zero_latency_components(FixedLatency(5)))
+        # The flag is part of the hash: recomputing the canonical payload with only the
+        # label flipped changes the digest, and the stored hash matches the labelled one.
+        payload(assumptions) = DendriteTrader.Simulation._canonical_payload(
+            assumptions,
+            zero.decisions,
+            zero.orders,
+            zero.fills,
+            zero.ledger,
+            zero.audit,
+            zero.metrics,
+            zero.instrument,
+        )
+        relabelled = deepcopy(zero.assumptions)
+        relabelled["latency"]["diagnostic_zero_latency"] = false
+        @test bytes2hex(sha256(payload(zero.assumptions))) == zero.result_hash
+        @test bytes2hex(sha256(payload(relabelled))) != zero.result_hash
+        # The parity.v1 export does not carry the flag, so it stays inside the v1 schema.
+        document = parity_document(zero, "zero")
+        @test !occursin("diagnostic", JSON.json(document))
+        @test run_parity_fixture(JSON.parse(JSON.json(document)))[1]
+    end
+
     @testset "Leakage 4: fees and slippage are applied exactly once" begin
         events =
             vcat(_base_events(), MarketEvent[_bd(3, 150, Bid, 100, 1), _bd(4, 300, Bid, 100, 1)])
@@ -1766,6 +1809,64 @@ end
         end
         @test replay_error isa PortfolioError && replay_error.kind == :unsupported_subset
         @test run_parity_fixture(JSON.parse(JSON.json(parity_document(long_flat, "ok"))))[1]
+        # Final-ledger export uses the portfolio's checked arithmetic. Hand-built results
+        # with an open position (the simulator itself only runs qty_scale == 1).
+        function with_final(base; inventory, total_cost, scale)
+            final = last(base.ledger)
+            values = Any[getfield(final, name) for name in fieldnames(LedgerPoint)]
+            names = fieldnames(LedgerPoint)
+            values[findfirst(==(:inventory_lots), names)] = inventory
+            values[findfirst(==(:total_cost_subunits), names)] = total_cost
+            ledger = vcat(base.ledger[1:(end - 1)], [LedgerPoint(values...)])
+            return SimulationResult(
+                base.assumptions,
+                base.decisions,
+                base.orders,
+                base.fills,
+                ledger,
+                base.audit,
+                base.metrics,
+                base.in_parity_subset,
+                base.initial_cash_subunits,
+                base.initial_inventory_lots,
+                base.initial_total_cost_subunits,
+                base.instrument,
+                scale,
+                base.result_hash,
+            )
+        end
+        export_error(result; kwargs...) =
+            try
+                parity_document(result, "checked"; kwargs...)
+                nothing
+            catch error
+                error
+            end
+        # (a) mark × inventory not divisible by qty_scale: rejected at export, because the
+        # reader's unrealized_pnl would reject it on replay.
+        odd = with_final(long_flat; inventory = 3, total_cost = 300, scale = ParityScale(100, 2))
+        odd_error = export_error(odd; mark_price_ticks = 101)
+        @test odd_error isa PortfolioError && odd_error.kind == :malformed_input
+        # (b) unrealized PnL outside Int64: typed out_of_range, not InexactError.
+        huge = with_final(long_flat; inventory = 4, total_cost = 0, scale = ParityScale(100, 1))
+        huge_error = export_error(huge; mark_price_ticks = typemax(Int64))
+        @test huge_error isa PortfolioError && huge_error.kind == :out_of_range
+        # (c) weighted cost basis outside Int64: typed out_of_range.
+        rich = with_final(
+            long_flat;
+            inventory = 1,
+            total_cost = typemax(Int64),
+            scale = ParityScale(100, 2),
+        )
+        rich_error = export_error(rich; mark_price_ticks = nothing)
+        @test rich_error isa PortfolioError && rich_error.kind == :out_of_range
+        # Zero inventory still exports unrealized 0 without touching the mark arithmetic.
+        flat_book =
+            with_final(long_flat; inventory = 0, total_cost = 0, scale = ParityScale(100, 2))
+        flat = parity_document(flat_book, "flat"; mark_price_ticks = 7)
+        @test flat["expected"]["unrealized_pnl_subunits"] == 0
+        @test flat["expected"]["weighted_cost_basis_ticks"] == 0
+        @test export_error(flat_book; mark_price_ticks = 0) isa PortfolioError
         @test_throws PortfolioError parity_document(long_flat, "bad_mark"; mark_price_ticks = -5)
         @test isempty(reconciliation_errors(signed))
         # Flip accounting: buy 4 @ 100, sell 6 @ 110 with fee 6 split 4 / 2 across legs.

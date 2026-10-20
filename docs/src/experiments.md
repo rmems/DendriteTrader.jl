@@ -150,6 +150,16 @@ decision became observable (`info_available_ts_ns`, from the feed-delay model â€
 activation). Cancels take effect after `cancel_ns`, and fills become visible to the
 decision function only after `report_ns`.
 
+Zero latency is allowed only as a labelled diagnostic. If any of `order_entry_ns`,
+`cancel_ns` or `report_ns` is zero, `assumptions["latency"]["diagnostic_zero_latency"]` is
+`true` and `assumptions["latency"]["zero_latency_components"]` names the zero components;
+`is_zero_latency_diagnostic(result)` reads the flag. All three trigger it because each
+removes a delay that favours the strategy: zero order entry fills at the decision instant,
+zero cancel withdraws orders before any venue event can reach them, and zero report shows
+the decision its own fills immediately. The flag is part of `result_hash`, and such a run
+must not be reported as evidence. Feed delay is recorded separately under
+`assumptions["feed"]` and does not set this flag.
+
 `decide(ctx::DecisionContext)` sees only: the decision time; the newest observable
 event (`event`, its `info_sequence` and `info_exchange_ts_ns`); a private copy of the
 observed book snapshot; the causal `microstructure_features` row for it; reported
@@ -261,6 +271,8 @@ SimulationResult
 simulate!
 ForecastPolicy
 reconciliation_errors
+zero_latency_components
+is_zero_latency_diagnostic
 decision_records
 fill_records
 run_parity_fixture

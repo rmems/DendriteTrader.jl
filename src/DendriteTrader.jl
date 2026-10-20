@@ -155,6 +155,7 @@ export ParityScale, PortfolioError, PaperPortfolio, AuditRow, apply_fill!, recor
 export notional_subunits, unrealized_pnl, weighted_cost_basis_ticks, in_parity_subset, reconciles
 export SimulationConfig, DecisionContext, DecisionRecord, LedgerPoint, SimulationResult
 export SimulationMetrics, simulate!, ForecastPolicy, reconciliation_errors
+export zero_latency_components, is_zero_latency_diagnostic
 export decision_records, fill_records, audit_dict
 export PARITY_SCHEMA_ID, load_parity_fixture, run_parity_fixture, parity_document
 

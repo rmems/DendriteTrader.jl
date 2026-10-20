@@ -309,3 +309,13 @@ function reconciliation_errors(result::SimulationResult)
         push!(errors, "$(length(result.fills) - applied) fills never reached the ledger")
     return errors
 end
+
+"""
+    is_zero_latency_diagnostic(result) -> Bool
+
+True when the run used a zero order-entry, cancel or report latency
+(`assumptions["latency"]["diagnostic_zero_latency"]`). Such a run is a diagnostic, not
+evidence (CLAUDE.md rule 2). The flag is part of `result_hash`.
+"""
+is_zero_latency_diagnostic(result::SimulationResult) =
+    result.assumptions["latency"]["diagnostic_zero_latency"] === true

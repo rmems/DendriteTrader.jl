@@ -251,14 +251,18 @@ function parity_document(
         end
     end
     final = last(result.ledger)
+    # Same checked arithmetic as PaperPortfolio: Euclidean floor basis, typed out_of_range.
     basis =
         final.inventory_lots == 0 ? Int64(0) :
-        fld(Int128(final.total_cost_subunits) * result.scale.qty_scale, final.inventory_lots)
+        _checked_i64(
+            fld(Int128(final.total_cost_subunits) * result.scale.qty_scale, final.inventory_lots),
+            "weighted cost basis",
+        )
     expected = Dict{String, Any}(
         "cash_subunits" => final.cash_subunits,
         "inventory_lots" => final.inventory_lots,
         "total_cost_subunits" => final.total_cost_subunits,
-        "weighted_cost_basis_ticks" => Int64(basis),
+        "weighted_cost_basis_ticks" => basis,
         "realized_pnl_subunits" => final.realized_pnl_subunits,
         "fees_subunits" => final.fees_subunits,
         "audit" => [audit_dict(row) for row in result.audit],
@@ -266,11 +270,14 @@ function parity_document(
     if mark_price_ticks !== nothing
         mark_price_ticks > 0 ||
             _fail(:malformed_input, "parity documents require a positive mark_price_ticks")
+        # notional_subunits enforces exact divisibility by qty_scale and Int64 range, as
+        # unrealized_pnl does on replay, so an unreplayable mark fails here, not later.
         expected["unrealized_pnl_subunits"] =
             final.inventory_lots == 0 ? 0 :
-            Int64(
-                Int128(mark_price_ticks) * final.inventory_lots ÷ result.scale.qty_scale -
+            _sub(
+                notional_subunits(result.scale, mark_price_ticks, final.inventory_lots),
                 final.total_cost_subunits,
+                "unrealized_pnl",
             )
     end
     document = Dict{String, Any}(

@@ -9,7 +9,8 @@ Deterministic decision-to-venue latency. An order decided at `t` becomes active 
 decided at `t` takes effect at `t + cancel_ns`; the order may fill in between. A fill
 or terminal order state at venue time `u` becomes visible to the decision function at
 `u + report_ns`. Decision compute time is folded into `order_entry_ns`. Zero latency is
-allowed as an explicit diagnostic, not a realistic claim.
+allowed as an explicit diagnostic, not a realistic claim: any zero component marks the run
+as a zero-latency diagnostic (see `zero_latency_components`).
 """
 struct FixedLatency
     order_entry_ns::Int64
@@ -26,6 +27,24 @@ struct FixedLatency
         0 <= report_ns <= typemax(Int64) || throw(ArgumentError("report_ns must be non-negative"))
         return new(Int64(order_entry_ns), Int64(cancel_ns), Int64(report_ns))
     end
+end
+
+"""
+    zero_latency_components(latency) -> Vector{String}
+
+Names of the `FixedLatency` components that are zero, in the order `order_entry_ns`,
+`cancel_ns`, `report_ns`. Each one removes a delay a real participant always pays:
+zero order entry fills at the decision instant, zero cancel lets a decision withdraw an
+order before any venue event can reach it, and zero report reveals its own fills (and the
+book state they imply) to the next decision with no lag. All three bias results in the
+strategy's favour, so any of them makes a run a diagnostic.
+"""
+function zero_latency_components(latency::FixedLatency)
+    names = String[]
+    latency.order_entry_ns == 0 && push!(names, "order_entry_ns")
+    latency.cancel_ns == 0 && push!(names, "cancel_ns")
+    latency.report_ns == 0 && push!(names, "report_ns")
+    return names
 end
 
 _checked_time(base::Int64, delta::Int64) = Base.Checked.checked_add(base, delta)
