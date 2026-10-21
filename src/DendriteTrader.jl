@@ -87,7 +87,7 @@ export validate_signal, execute_signal!, latency_ns, passes_gate
 export DydxClient, DydxPrice, get_price, mid_price, spread_bps
 export RateLimiter, acquire!, set_rate!
 export PriceCache, invalidate!, clear!, cache_size, get_cached, put_cached!, is_fresh
-export start!, stop!, events, fill_rate, portfolio_risk
+export start!, stop!, events, fill_rate, portfolio_risk, DEFAULT_MAX_POSITION_FRACTION
 export kelly_fraction, from_confidence, half_kelly
 export RiskTier, Aggressive, Moderate, Conservative, Minimal, risk_tier
 export PositionSize, size_position
@@ -439,6 +439,7 @@ end
 const _EXECUTION_CONFIG_KEYS = Set((
     "confidence_threshold",
     "max_position_size",
+    "max_position_fraction",
     "max_portfolio_exposure",
     "payoff_ratio",
     "log_file",
@@ -471,14 +472,15 @@ end
 
 Create an [`ExecutionEngine`](@ref) from a flat TOML (`.toml`) or YAML
 (`.yaml`/`.yml`) file. The supported keys are `confidence_threshold`,
-`max_position_size`, `max_portfolio_exposure`, `payoff_ratio`, `log_file`, and
-`truncate`; omitted keys use the constructor defaults. Numeric configuration
-values are converted to the engine's concrete numeric types, and YAML `null` is
-accepted for `log_file`. All numeric values must be finite. Omit
-`max_portfolio_exposure` for the unlimited (`Inf`) default; when set in a file
-it must be a positive finite cap. `confidence_threshold` must be in `[0, 1]`, and
-`max_position_size`, `max_portfolio_exposure`, and `payoff_ratio` must be
-positive. Relative
+`max_position_size`, `max_position_fraction`, `max_portfolio_exposure`,
+`payoff_ratio`, `log_file`, and `truncate`; omitted keys use the constructor
+defaults. Numeric configuration values are converted to the engine's concrete
+numeric types, and YAML `null` is accepted for `log_file`. All numeric values must
+be finite. Omit `max_position_size` for no absolute unit cap and
+`max_portfolio_exposure` for the unlimited exposure default (both `Inf`); when set
+in a file each must be a positive finite cap. `confidence_threshold` must be in
+`[0, 1]`, and `max_position_size`, `max_position_fraction`,
+`max_portfolio_exposure`, and `payoff_ratio` must be positive. Relative
 `log_file` paths are resolved relative to the configuration file.
 
 An unsupported extension, a non-mapping YAML document, an unknown key, or a
@@ -514,6 +516,12 @@ function load_config(path::AbstractString)
         max_position_size > 0.0 ||
             throw(ArgumentError("configuration key `max_position_size` must be positive"))
         push!(kwargs, :max_position_size => max_position_size)
+    end
+    if haskey(config, "max_position_fraction")
+        max_position_fraction = _config_number(config, "max_position_fraction", Float64)
+        max_position_fraction > 0.0 ||
+            throw(ArgumentError("configuration key `max_position_fraction` must be positive"))
+        push!(kwargs, :max_position_fraction => max_position_fraction)
     end
     if haskey(config, "max_portfolio_exposure")
         max_portfolio_exposure = _config_number(config, "max_portfolio_exposure", Float64)
@@ -561,10 +569,23 @@ Stateful execution engine with confidence gating and position management.
 
 # Fields
 - `confidence_threshold`: minimum SNN confidence to execute (default 0.85)
-- `max_position_size`:    hard cap on position units (default 10.0); must be finite
-                          and positive (the constructor throws `ArgumentError`). Kelly-sized
-                          units above the cap are rejected (`max_position_reject`),
-                          not shrunk to the cap.
+- `max_position_size`:    optional absolute cap on order units (default `Inf`, no
+                          absolute cap). Must be positive; `NaN`, `0` and negative
+                          values throw `ArgumentError`. Kelly-sized units above the
+                          cap are rejected (`max_position_reject`, reason prefix
+                          `exceeds_max_position:`), not shrunk to the cap.
+- `max_position_fraction`: relative cap on order notional as a fraction of the
+                          account balance (default `1.0`).
+                          An order is rejected when
+                          `units * price > max_position_fraction * account_balance`
+                          (`max_position_reject`, reason prefix
+                          `exceeds_max_position_fraction:`). Must be finite and
+                          positive. Orders that only reduce the existing position in
+                          that ticker are exempt, because both the price and the
+                          balance can drift after entry and a cap must not trap a
+                          position. See [`DEFAULT_MAX_POSITION_FRACTION`](@ref) for
+                          why the default never binds on Kelly-sized entries. When
+                          both caps are set, both apply.
 - `max_portfolio_exposure`: cap on total gross notional exposure in price
                           units across all tickers (default `Inf`, unlimited).
                           Positions are valued at the last execution price seen
@@ -580,6 +601,7 @@ Stateful execution engine with confidence gating and position management.
 mutable struct ExecutionEngine
     confidence_threshold::Float32
     max_position_size::Float64
+    max_position_fraction::Float64
     max_portfolio_exposure::Float64
     payoff_ratio::Float64
     positions::Dict{String, Float64}
@@ -646,26 +668,66 @@ function _record_event!(engine::ExecutionEngine, event::SignalEvent)
 end
 
 """
-    ExecutionEngine(; confidence_threshold=0.85f0, max_position_size=10.0, max_portfolio_exposure=Inf, payoff_ratio=1.5, log_file=nothing, truncate=false)
+    DEFAULT_MAX_POSITION_FRACTION = 1.0
+
+Default relative position cap for [`ExecutionEngine`](@ref) and `BacktestConfig`: an
+order's notional (`units * price`) may not exceed this fraction of the account
+balance, i.e. no leverage.
+
+Why `1.0`: `execute_signal!` sizes with [`size_position`](@ref) at its default
+`kelly_scalar = 0.5`, whose Kelly fraction is `0.5 * (p*b - q)/b`, capped to `[0, 1]`.
+Because `(p*b - q)/b <= 1` for every `p` in `[0, 1]` and `b > 0`, a Kelly-sized entry
+commits at most `0.5` of the balance (reached only at confidence `1.0`). A default of
+`1.0` therefore never rejects a Kelly-sized entry and leaves a 2x margin, so
+floating-point rounding at the boundary cannot flip a decision. It is a backstop
+against unlevered-notional violations (for example an explicit
+`position_units_override`), not a sizing policy.
+
+The `[0, 0.20]` output cap of [`kelly_fraction`](@ref) does not apply here:
+`execute_signal!` does not call `kelly_fraction`, so Kelly-sized entries can commit up
+to `0.5` of the balance (about `0.458` at confidence `0.95` with `payoff_ratio = 1.5`).
+A relative cap at or below `0.5`, such as `0.25`, would reject ordinary high-confidence
+entries.
+"""
+const DEFAULT_MAX_POSITION_FRACTION = 1.0
+
+# Shared constructor validation for ExecutionEngine and BacktestConfig. Caps are never
+# coerced: a NaN cap would make `x > cap` false and silently disable it.
+function _validate_position_caps(max_position_size::Real, max_position_fraction::Real)
+    (!isnan(max_position_size) && max_position_size > 0.0) || throw(
+        ArgumentError(
+            "max_position_size must be positive (Inf means no absolute cap), got $(repr(max_position_size))",
+        ),
+    )
+    (isfinite(max_position_fraction) && max_position_fraction > 0.0) || throw(
+        ArgumentError(
+            "max_position_fraction must be finite and positive, got $(repr(max_position_fraction))",
+        ),
+    )
+    return nothing
+end
+
+"""
+    ExecutionEngine(; confidence_threshold=0.85f0, max_position_size=Inf, max_position_fraction=DEFAULT_MAX_POSITION_FRACTION, max_portfolio_exposure=Inf, payoff_ratio=1.5, log_file=nothing, truncate=false)
 
 Create an execution engine. If `log_file` is provided, events are appended as JSON-lines.
 Pass `truncate=true` to truncate an existing log.
+
+`max_position_size` is an optional absolute unit cap (`Inf` means none) and
+`max_position_fraction` a relative notional cap (`units * price` over the account
+balance). Both apply when both are set. Invalid caps (`NaN`, non-positive, or a
+non-finite fraction) throw `ArgumentError`.
 """
 function ExecutionEngine(;
     confidence_threshold::Float32 = Float32(0.85),
-    max_position_size::Float64 = 10.0,
+    max_position_size::Float64 = Inf,
+    max_position_fraction::Float64 = DEFAULT_MAX_POSITION_FRACTION,
     max_portfolio_exposure::Float64 = Inf,
     payoff_ratio::Float64 = 1.5,
     log_file::Union{String, Nothing} = nothing,
     truncate::Bool = false,
 )
-    # A NaN cap would make `units > max_position_size` false and silently disable the
-    # hard cap; Inf would mean "no cap" for a field documented as a hard cap.
-    (isfinite(max_position_size) && max_position_size > 0.0) || throw(
-        ArgumentError(
-            "max_position_size must be finite and positive, got $(repr(max_position_size))",
-        ),
-    )
+    _validate_position_caps(max_position_size, max_position_fraction)
     (isfinite(max_portfolio_exposure) || isinf(max_portfolio_exposure)) &&
     max_portfolio_exposure > 0.0 || throw(
         ArgumentError(
@@ -685,6 +747,7 @@ function ExecutionEngine(;
     engine = ExecutionEngine(
         confidence_threshold,
         max_position_size,
+        max_position_fraction,
         max_portfolio_exposure,
         payoff_ratio,
         Dict{String, Float64}(),
@@ -739,6 +802,40 @@ function portfolio_risk(engine::ExecutionEngine)
     return total
 end
 
+# True when an order of `units` on `side` only reduces the existing signed position
+# `current` (it neither increases |position| nor flips its side).
+function _reduces_position(current::Float64, units::Float64, side::TradeSide)
+    side == Buy && return current < 0.0 && units <= -current
+    side == Sell && return current > 0.0 && units <= current
+    return false
+end
+
+# Return `nothing` when the order passes both position caps, else an explicit reason
+# naming the cap that was hit. Nothing is clamped: the caller rejects the whole order.
+function _position_cap_violation(
+    engine::ExecutionEngine,
+    units::Float64,
+    price::Float64,
+    account_balance::Float64,
+    current::Float64,
+    side::TradeSide,
+)
+    if units > engine.max_position_size
+        return "exceeds_max_position: units $(units) exceed max_position_size $(engine.max_position_size)"
+    end
+    units > 0.0 || return nothing
+    _reduces_position(current, units, side) && return nothing
+    notional = units * price
+    limit = engine.max_position_fraction * account_balance
+    # `!(notional <= limit)` also rejects a NaN notional or limit instead of passing it.
+    if !(notional <= limit)
+        return "exceeds_max_position_fraction: notional $(notional) (units $(units) × price $(price)) " *
+               "exceeds max_position_fraction $(engine.max_position_fraction) × " *
+               "account_balance $(account_balance) = $(limit)"
+    end
+    return nothing
+end
+
 """
     execute_signal!(engine, signal, account_balance; observed_ns=nothing,
                     position_units_override=nothing) -> ExecutionDecision
@@ -759,13 +856,22 @@ Every rejection increments `rejected_signals`, records a `SignalEvent`, and retu
 - `sizing_reject` (reason prefix `invalid_sizing_input:`): `size_position` rejected
   its inputs, e.g. `signal.price <= 0`, `account_balance <= 0`, a non-finite value, or
   confidence outside `[0, 1]`.
-- `max_position_reject` (reason prefix `exceeds_max_position:`): Kelly-sized units
-  exceed `engine.max_position_size`.
+- `max_position_reject`: a position cap was hit. The reason names the cap:
+  - prefix `exceeds_max_position:` when Kelly-sized units exceed the absolute
+    `engine.max_position_size` (default `Inf`, no absolute cap);
+  - prefix `exceeds_max_position_fraction:` when the order notional
+    `units * price` exceeds `engine.max_position_fraction * account_balance`
+    (default fraction `1.0`). Orders that only reduce the existing position in the
+    ticker are exempt from this relative cap.
+  When both caps are set, both apply and the absolute cap is checked first. Nothing is
+  shrunk to a cap: the whole order is rejected and no position changes.
 - `zero_reject`: the Kelly fraction is zero (no edge), so the sized position is zero.
 - `portfolio_reject`: the projected gross exposure would exceed `max_portfolio_exposure`.
 
-An invalid `position_units_override` (non-finite, negative, or above
-`max_position_size`) is a caller error and throws `ArgumentError`. When an override
+An invalid `position_units_override` (non-finite, negative, above `max_position_size`,
+or, for an order that does not only reduce the position, with notional above
+`max_position_fraction * account_balance`) is a caller error and throws
+`ArgumentError` whose message carries the same cap reason. When an override
 is supplied and `account_balance` is finite but `<= 0`, Kelly sizing is skipped (the
 override quantity does not depend on it) so an existing position can still be closed;
 price and confidence are still validated (as in `size_position`) and the reported
@@ -779,6 +885,9 @@ real sizing decision and is reported as `zero_reject`, not as `sizing_reject`.
 Behavior change: earlier versions silently capped Kelly-sized units with
 `min(units, max_position_size)` and executed the reduced size, and treated
 `account_balance <= 0` or `price <= 0` as a `zero_reject` with no specific reason.
+The default cap is now relative (`max_position_fraction = 1.0`) instead of a fixed
+`max_position_size = 10.0` units, which rejected ordinary Kelly-sized entries at a
+`10_000` balance and prices below about `1_000 × k`.
 """
 function execute_signal!(
     engine::ExecutionEngine,
@@ -875,34 +984,43 @@ function execute_signal!(
         return ExecutionDecision(signal, false, reason, 0.0, 0.0, 0.0, lat)
     end
 
+    price = Float64(signal.price)
+    current = get(engine.positions, signal.ticker, 0.0)
     units = if position_units_override === nothing
-        # Kelly-sized units above the hard cap are rejected, never shrunk to the cap.
-        if kelly_units > engine.max_position_size
-            engine.rejected_signals += 1
-            reason = "exceeds_max_position: Kelly-sized units $(kelly_units) exceed max_position_size $(engine.max_position_size)"
-            _record_event!(
-                engine,
-                SignalEvent(
-                    "max_position_reject",
-                    signal.ticker,
-                    signal.confidence,
-                    string(signal.side);
-                    reason = reason,
-                    kelly_fraction = kelly,
-                    latency_ns = lat,
-                ),
-            )
-            return ExecutionDecision(signal, false, reason, kelly, 0.0, 0.0, lat)
-        end
         kelly_units
     else
         overridden = Float64(position_units_override)
         if !isfinite(overridden) || overridden < 0.0
             throw(ArgumentError("position_units_override must be finite and non-negative"))
         end
-        overridden <= engine.max_position_size ||
-            throw(ArgumentError("position_units_override must not exceed max_position_size"))
         overridden
+    end
+
+    # Position caps reject, never shrink (research invariant 7). The absolute unit cap
+    # applies to every order. The relative notional cap applies to every order except one
+    # that only reduces the existing position in this ticker: price and balance drift
+    # after entry, and a cap that blocks a reduction would trap the position.
+    cap_reason =
+        _position_cap_violation(engine, units, price, account_balance, current, signal.side)
+    if cap_reason !== nothing
+        if position_units_override !== nothing
+            # An explicit fill quantity above a cap is a caller error, not a decision.
+            throw(ArgumentError("position_units_override rejected: $(cap_reason)"))
+        end
+        engine.rejected_signals += 1
+        _record_event!(
+            engine,
+            SignalEvent(
+                "max_position_reject",
+                signal.ticker,
+                signal.confidence,
+                string(signal.side);
+                reason = cap_reason,
+                kelly_fraction = kelly,
+                latency_ns = lat,
+            ),
+        )
+        return ExecutionDecision(signal, false, cap_reason, kelly, 0.0, 0.0, lat)
     end
 
     if units <= 0.0
@@ -928,8 +1046,6 @@ function execute_signal!(
     # after applying this signal must not exceed the cap. Signals that only
     # reduce the existing position in the same ticker lower exposure and are
     # always allowed.
-    price = Float64(signal.price)
-    current = get(engine.positions, signal.ticker, 0.0)
     projected_quantity = signal.side == Buy ? current + units : current - units
     prior_ticker_exposure = abs(current) * get(engine.last_prices, signal.ticker, 0.0)
     projected_ticker_exposure = abs(projected_quantity) * price

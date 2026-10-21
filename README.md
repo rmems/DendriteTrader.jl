@@ -85,7 +85,7 @@ using DendriteTrader
 
 engine = ExecutionEngine(
     confidence_threshold = Float32(0.85),
-    max_position_size    = 10.0,
+    max_position_fraction = 1.0,   # default: notional ≤ 1.0 × balance (no leverage)
     payoff_ratio         = 1.5,
     log_file             = "events.jsonl",
 )
@@ -122,7 +122,9 @@ engine = load_config("engine.toml")
 ```
 
 The complete schema is `confidence_threshold` (finite number from `0` to `1`),
-`max_position_size` (positive finite number), `max_portfolio_exposure` (positive
+`max_position_size` (positive finite number; optional absolute unit cap, omit for none),
+`max_position_fraction` (positive finite number; relative cap on order notional over the
+account balance, default `1.0`), `max_portfolio_exposure` (positive
 number: cap on total gross notional exposure across all tickers, valued at each
 ticker's last execution price), `payoff_ratio` (positive finite number),
 `log_file` (string, or YAML `null`), and `truncate` (boolean). A
@@ -141,8 +143,10 @@ signal = TradeSignal(Dict(
 ))
 
 decision = execute_signal!(engine, signal, 10_000.0)
-# With max_position_size = 10.0, the ~43 Kelly-sized units are rejected
-# (reason "exceeds_max_position: ..."); sizes are never silently capped.
+# Kelly sizes ~43 units (k ≈ 0.433 of the balance), within the default relative cap
+# max_position_fraction = 1.0, so it executes at its full size. Orders above a cap
+# are rejected ("exceeds_max_position: ..." for the absolute unit cap,
+# "exceeds_max_position_fraction: ..." for the relative cap); never silently capped.
 println(decision)
 ```
 
@@ -352,7 +356,7 @@ export_trade_log_json(result, "output/trades.json")
 
 | Type / Function | Description |
 |-----------------|-------------|
-| `BacktestConfig(; initial_balance, confidence_threshold, payoff_ratio, max_position_size, risk_free_rate, slippage_pct, commission_pct, log_file)` | Configuration for a backtest run. Defaults: balance `$10,000`, threshold `0.85`, payoff `1.5`, max units `10.0`, risk-free rate `0.0`, slippage `0.0%`, commission `0.0%`. Optional `log_file` persists `SignalEvent`s. |
+| `BacktestConfig(; initial_balance, confidence_threshold, payoff_ratio, max_position_size, max_position_fraction, risk_free_rate, slippage_pct, commission_pct, log_file)` | Configuration for a backtest run. Defaults: balance `$10,000`, threshold `0.85`, payoff `1.5`, no absolute unit cap (`max_position_size = Inf`), relative cap `max_position_fraction = 1.0`, risk-free rate `0.0`, slippage `0.0%`, commission `0.0%`. Optional `log_file` persists `SignalEvent`s. |
 | `run_backtest(config, signals; log_file=config.log_file)` | Replay `Vector{TradeSignal}` through the engine. Returns a `BacktestResult`. |
 | `BacktestResult` | Result struct with `config`, `initial_balance`, `final_balance`, `equity_curve`, `trade_log`, `events`, `total_return`, `max_drawdown`, `win_rate`, `total_trades`. |
 | `print_summary(result)` | Print a formatted summary table to stdout. |

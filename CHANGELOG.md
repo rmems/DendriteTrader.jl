@@ -13,14 +13,28 @@ Research invariant 7: unsupported or invalid sizes and prices are rejected with 
 explicit reason, never silently clamped or coerced. Public signatures are unchanged.
 
 - `execute_signal!` no longer caps Kelly-sized units with `min(units, max_position_size)`.
-  A signal whose Kelly size exceeds `max_position_size` is rejected: `executed = false`,
+  A signal whose Kelly size exceeds a position cap is rejected: `executed = false`,
   `rejected_signals` is incremented, a `max_position_reject` event is recorded, and the
-  reason starts with `exceeds_max_position:`. Units exactly at the cap are accepted.
-  With the defaults (`max_position_size = 10.0`, `payoff_ratio = 1.5`,
-  `kelly_scalar = 0.5`) and a `10_000` balance, the Kelly size exceeds 10 units
-  whenever the price is below about `1_000 × k` (for example below ~433 at
-  confidence 0.92, where `k ≈ 0.433`), so those signals are now rejected. Raise
-  `max_position_size` to execute them at their full Kelly size.
+  reason names the cap (`exceeds_max_position:` or `exceeds_max_position_fraction:`).
+  Sizes exactly at a cap are accepted.
+- **Default position cap is now relative.** New `max_position_fraction` on
+  `ExecutionEngine`, `BacktestConfig` and `load_config` (default
+  `DEFAULT_MAX_POSITION_FRACTION = 1.0`): an order is rejected when
+  `units * price > max_position_fraction * account_balance`. Orders that only reduce
+  the existing position in the ticker are exempt. `max_position_size` becomes an
+  optional absolute unit cap with default `Inf` (was `10.0`); when both are set, both
+  apply. The fixed 10-unit default rejected ordinary entries (a `10_000` balance at
+  price `100` sizes ~46 units at confidence `0.95`), so a default backtest made zero
+  trades. Why `1.0`: `execute_signal!` sizes with `size_position` at
+  `kelly_scalar = 0.5`, which commits at most `0.5` of the balance; the `[0, 0.20]`
+  output cap belongs to `kelly_fraction`, which this path does not use, so a relative
+  default such as `0.25` would still reject ordinary entries. `1.0` (no leverage) never
+  binds on Kelly-sized entries and is a backstop for explicit quantities.
+- `ExecutionEngine` and `BacktestConfig` throw `ArgumentError` for a `max_position_fraction`
+  that is `NaN`, `±Inf` or `<= 0`, and for a `max_position_size` that is `NaN` or `<= 0`
+  (`Inf` means no absolute cap). An explicit `position_units_override` above either cap
+  throws `ArgumentError` carrying the cap reason. `BacktestConfig` keeps an eight-argument
+  positional constructor that uses the default relative cap.
 - `execute_signal!` rejects invalid sizing inputs (`price <= 0`, `account_balance <= 0`,
   non-finite values, confidence outside `[0, 1]`) with a `sizing_reject` event and a reason
   starting with `invalid_sizing_input:`. Previously these were a `zero_reject` with the
@@ -41,12 +55,10 @@ explicit reason, never silently clamped or coerced. Public signatures are unchan
 - `half_kelly` (and `from_confidence`, which delegates to it) throws `ArgumentError` when
   `p` is outside `[0, 1]` or non-finite, or `b` is non-positive or non-finite (previously
   clamped and floored at `1e-9`). The `[0, 1]` output cap is unchanged.
-- `ExecutionEngine` throws `ArgumentError` when `max_position_size` is not finite and
-  positive. A `NaN` cap previously disabled the hard cap, because `units > NaN` is false.
-  `load_config` already rejected non-positive values from files.
-- `run_backtest` inherits the engine change: with the default `BacktestConfig`
-  (`max_position_size = 10.0`), entries whose Kelly size exceeds 10 units are now
-  rejected rather than opened at 10 units.
+- A `NaN` `max_position_size` previously disabled the hard cap, because `units > NaN`
+  is false; it now throws. `load_config` already rejected non-positive values from files.
+- `run_backtest` inherits the engine change: an entry above a configured cap is rejected
+  rather than opened at the cap. Pass `max_position_size` to restore an absolute unit cap.
 
 ### Added
 

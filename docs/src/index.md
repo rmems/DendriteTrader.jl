@@ -36,7 +36,7 @@ using DendriteTrader
 
 engine = ExecutionEngine(
     confidence_threshold = Float32(0.85),
-    max_position_size    = 10.0,
+    max_position_fraction = 1.0,   # default: notional ≤ 1.0 × balance
     payoff_ratio         = 1.5,
 )
 
@@ -50,8 +50,9 @@ signal = TradeSignal(Dict(
 ))
 
 decision = execute_signal!(engine, signal, 10_000.0)
-# Kelly sizing proposes ~43 units here, above max_position_size = 10.0, so this
-# signal is rejected with reason "exceeds_max_position: ..." rather than shrunk.
+# Kelly sizing proposes ~43 units here (k ≈ 0.433 of the balance), within the
+# relative cap, so it executes at full size. An order above a cap is rejected
+# ("exceeds_max_position_fraction: ..." or "exceeds_max_position: ..."), never shrunk.
 println(decision.executed, " — ", decision.reason)
 ```
 
