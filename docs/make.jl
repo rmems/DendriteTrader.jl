@@ -4,10 +4,16 @@ using Documenter
 using DendriteTrader
 using DendriteTrader.SizingModule
 using DendriteTrader.Backtest
+using DendriteTrader.Simulation
 
 makedocs(
     sitename = "DendriteTrader.jl",
-    modules = [DendriteTrader, DendriteTrader.SizingModule, DendriteTrader.Backtest],
+    modules = [
+        DendriteTrader,
+        DendriteTrader.SizingModule,
+        DendriteTrader.Backtest,
+        DendriteTrader.Simulation,
+    ],
     authors = "Raul Montoya Cardenas",
     format = Documenter.HTML(
         prettyurls = get(ENV, "CI", nothing) == "true",
