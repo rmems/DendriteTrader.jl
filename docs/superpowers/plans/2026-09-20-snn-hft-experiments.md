@@ -133,13 +133,13 @@
 - Produces: `OrderIntent`, `PaperOrder`, `Fill`, `FixedLatency`, `L2QueueApproximation`, `PaperPortfolio`, `simulate!`, and `SimulationResult`.
 - Consumes: forecasts from Task 4 and replay events from Task 2.
 
-- [ ] **Step 1: Write tests proving no fill occurs before decision time plus latency.**
-- [ ] **Step 2: Implement fixed-latency order activation.**
-- [ ] **Step 3: Write tests for spread crossing, passive non-fill, partial fill, cancellation, fees, and rebates.**
-- [ ] **Step 4: Implement deterministic seeded fills with assumptions stored in the result.**
-- [ ] **Step 5: Write inventory, cash, realized PnL, unrealized PnL, and drawdown reconciliation tests.**
-- [ ] **Step 6: Implement the signed portfolio ledger and per-event mark-to-market curve.**
-- [ ] **Step 7: Run the full suite and commit the simulator.**
+- [x] **Step 1: Write tests proving no fill occurs before decision time plus latency.**
+- [x] **Step 2: Implement fixed-latency order activation.**
+- [x] **Step 3: Write tests for spread crossing, passive non-fill, partial fill, cancellation, fees, and rebates.**
+- [x] **Step 4: Implement deterministic seeded fills with assumptions stored in the result.**
+- [x] **Step 5: Write inventory, cash, realized PnL, unrealized PnL, and drawdown reconciliation tests.**
+- [x] **Step 6: Implement the signed portfolio ledger and per-event mark-to-market curve.**
+- [x] **Step 7: Run the full suite and commit the simulator.**
 
 ### Task 6: Reproducible experiment artifacts
 

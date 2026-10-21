@@ -50,6 +50,8 @@ explicit reason, never silently clamped or coerced. Public signatures are unchan
 
 ### Added
 
+- **Latency-aware paper simulator (RM-1864)**: `simulate!` replays a `ReplaySession` with separate information, decision, activation and fill clocks (`FixedLatency`, `ReceiveTimestampFeed` / `FixedFeedDelay`), an explicitly approximate `L2QueueApproximation` fill model, integer `FeeSchedule`, bounded `RiskLimits`, and a per-step reconciled `PaperPortfolio` evaluation state. `SimulationResult` stores all assumptions, seeds and a SHA-256 result hash. Vendored `metabolic-ledger.parity.v1` fixtures are replayed with `run_parity_fixture`; `parity_document` emits long/flat runs in the same schema. Paper only; no order submission. Runs with any zero order-entry, cancel or report latency are labelled `diagnostic_zero_latency` in their assumptions and hash (`is_zero_latency_diagnostic`).
+- **Leakage canaries for splits and labels** (`test/leakage_splits_labels.jl`): walk-forward splits checked by event sequence on feature frames with skipped events and on row tables with several rows per event; `RidgeClassifier` parameters shown independent of rows and labels past the training frame; structural check that `MovementTarget` cannot be passed to `predict!`, `encode!`, `transform!`, sizing, or signal-execution APIs. Each canary has a deliberately leaky control. Two `@test_broken` assertions document that `walk_forward_splits` embargoes in row positions, not event sequences, so an event-denominated horizon under-embargoes when several rows share an event.
 - `CLAUDE.md`: Claude Code notes importing `AGENTS.md`, with research invariants, known invariant gaps, verified commands, and an architecture map.
 - **Event persistence**: `ExecutionEngine` can append every `SignalEvent` to a JSON-lines log (`log_file` and `truncate` kwargs). New `load_history(path)` reads the log back, skipping missing/empty/malformed lines. New `close_log!(engine)` flushes and closes the log handle.
 - **Portfolio exposure cap**: `ExecutionEngine` accepts `max_portfolio_exposure` (default `Inf`, unlimited), a cap on total gross notional exposure (`Σ |quantity| × last execution price`) across all tickers. `execute_signal!` rejects signals whose resulting exposure would exceed the cap (`portfolio_reject` event); signals that only reduce an existing position are always allowed. New `portfolio_risk(engine)` accessor returns the current gross notional exposure. `load_config` supports the `max_portfolio_exposure` key (must be positive).
@@ -58,6 +60,7 @@ explicit reason, never silently clamped or coerced. Public signatures are unchan
 
 ### Changed
 
+- **CI format gate**: the `JuliaFormatter` CI job now actually fails on unformatted code. It previously ran `format(".", check=true)`, which JuliaFormatter 2.x ignores (it reformatted in place and exited 0). The job now installs JuliaFormatter `2.x` into a temporary environment and exits 1 when `format("."; overwrite=false)` returns `false`. `AGENTS.md` documents the same command. `src/features/Labels.jl`, `src/market/Replay.jl` and `test/leakage.jl` were reformatted (layout only, parsed ASTs unchanged).
 - License: switched from GPL-3.0-only to dual MIT OR Apache-2.0.
   - Added `LICENSE-MIT` and `LICENSE-APACHE-2.0`.
   - Updated top-level `LICENSE` to declare dual licensing.

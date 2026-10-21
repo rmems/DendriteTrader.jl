@@ -44,4 +44,18 @@ jobs:
         with:
           version: '1.13'
       - uses: julia-actions/cache@9353db09a0f2bbbdec6f41791918c75d37391b36 # v3.5.0
-      - run: julia --project=. -e 'using Pkg; Pkg.add("JuliaFormatter"); using JuliaFormatter; format(".", check=true)'
+      # Non-mutating check. JuliaFormatter 2.x ignores `check=true` (it reformats in place and
+      # exits 0), so use `overwrite=false` and fail on a `false` result. Install into a temporary
+      # environment so the project's Project.toml is never modified.
+      - name: Check formatting
+        run: |
+          julia --startup-file=no -e '
+            using Pkg
+            Pkg.activate(temp = true)
+            Pkg.add(name = "JuliaFormatter", version = "2")
+            using JuliaFormatter
+            @info "JuliaFormatter" pkgversion(JuliaFormatter)
+            if !format("."; overwrite = false, verbose = true)
+                @error "Files are not formatted. Run JuliaFormatter locally (see AGENTS.md)."
+                exit(1)
+            end'

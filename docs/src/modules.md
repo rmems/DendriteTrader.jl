@@ -19,3 +19,9 @@ DendriteTrader.SizingModule
 ```@docs
 DendriteTrader.Backtest
 ```
+
+## Simulation
+
+```@docs
+DendriteTrader.Simulation
+```
