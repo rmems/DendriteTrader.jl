@@ -10,7 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed (breaking: sizing rejects invalid inputs instead of clamping)
 
 Research invariant 7: unsupported or invalid sizes and prices are rejected with an
-explicit reason, never silently clamped or coerced. Public signatures are unchanged.
+explicit reason, never silently clamped or coerced. Existing keyword calls keep
+working, but the public API changes: `ExecutionEngine`, the `BacktestConfig` keyword
+constructor and `load_config` accept a new `max_position_fraction`; `BacktestConfig`
+gains a ninth field (its full positional constructor takes nine arguments, and an
+eight-argument form is kept); `DEFAULT_MAX_POSITION_FRACTION` is a new export; and the
+`max_position_size` default changes from `10.0` to `Inf`.
 
 - `execute_signal!` no longer caps Kelly-sized units with `min(units, max_position_size)`.
   A signal whose Kelly size exceeds a position cap is rejected: `executed = false`,
@@ -19,17 +24,20 @@ explicit reason, never silently clamped or coerced. Public signatures are unchan
   Sizes exactly at a cap are accepted.
 - **Default position cap is now relative.** New `max_position_fraction` on
   `ExecutionEngine`, `BacktestConfig` and `load_config` (default
-  `DEFAULT_MAX_POSITION_FRACTION = 1.0`): an order is rejected when
-  `units * price > max_position_fraction * account_balance`. Orders that only reduce
-  the existing position in the ticker are exempt. `max_position_size` becomes an
+  `DEFAULT_MAX_POSITION_FRACTION = 1.0`): an order is rejected when the projected
+  position in the ticker, `abs(current_units ± units) * price`, exceeds
+  `max_position_fraction * account_balance`. Orders that only reduce the existing
+  position in the ticker are exempt; a flip past flat is checked. The cap is per ticker
+  and does not bound total notional across tickers (`max_portfolio_exposure` does). `max_position_size` becomes an
   optional absolute unit cap with default `Inf` (was `10.0`); when both are set, both
   apply. The fixed 10-unit default rejected ordinary entries (a `10_000` balance at
   price `100` sizes ~46 units at confidence `0.95`), so a default backtest made zero
   trades. Why `1.0`: `execute_signal!` sizes with `size_position` at
   `kelly_scalar = 0.5`, which commits at most `0.5` of the balance; the `[0, 0.20]`
   output cap belongs to `kelly_fraction`, which this path does not use, so a relative
-  default such as `0.25` would still reject ordinary entries. `1.0` (no leverage) never
-  binds on Kelly-sized entries and is a backstop for explicit quantities.
+  default such as `0.25` would still reject ordinary entries. `1.0` never binds on a
+  single Kelly-sized entry from flat; it binds when same-side entries accumulate (a
+  third Kelly buy at confidence `0.92` is rejected) and on oversized explicit quantities.
 - `ExecutionEngine` and `BacktestConfig` throw `ArgumentError` for a `max_position_fraction`
   that is `NaN`, `±Inf` or `<= 0`, and for a `max_position_size` that is `NaN` or `<= 0`
   (`Inf` means no absolute cap). An explicit `position_units_override` above either cap

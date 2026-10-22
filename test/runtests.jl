@@ -636,6 +636,55 @@ include("spikes.jl")
         end
     end
 
+    @testset "ExecutionEngine — relative cap checks the projected position" begin
+        # Kelly at confidence 0.92, payoff 1.5: k ≈ 0.433, ~43.3 units at price 100.
+        buy = TradeSignal("MARKET-P", Buy, 100.0, 1.0, 0.92f0, 0)
+        sell = TradeSignal("MARKET-P", Sell, 100.0, 1.0, 0.92f0, 1)
+        k = size_position(
+            confidence = Float64(buy.confidence),
+            price = 100.0,
+            account_balance = 10_000.0,
+        )
+        @test 0.43 < k.kelly_fraction < 0.44
+
+        # Three same-ticker Kelly buys at the default cap 1.0: the first two project
+        # ~0.433 and ~0.867 of the balance and execute; the third would project ~1.3 and
+        # is rejected whole, although the order alone (~0.433) is under the cap.
+        engine = ExecutionEngine()
+        @test execute_signal!(engine, buy, 10_000.0).executed
+        @test execute_signal!(engine, buy, 10_000.0).executed
+        held = engine.positions["MARKET-P"]
+        @test held ≈ 2 * k.units
+        third = execute_signal!(engine, buy, 10_000.0)
+        @test !third.executed
+        @test startswith(third.reason, "exceeds_max_position_fraction: projected position")
+        @test third.position_units == 0.0
+        @test engine.events[end].event_type == "max_position_reject"
+        @test engine.positions["MARKET-P"] == held
+
+        # A reducing Kelly sell (opposite side, smaller than the position) is allowed,
+        # even after the price rises so far that the remaining position is above the cap.
+        risen = TradeSignal("MARKET-P", Sell, 400.0, 1.0, 0.92f0, 2)
+        dec_reduce = execute_signal!(engine, risen, 10_000.0)
+        @test dec_reduce.executed
+        @test engine.positions["MARKET-P"] < held
+
+        # An oversized flip (sell more than the long position) is not a reduction: it is
+        # checked as a new short position. From +10, a Kelly sell of ~43.3 projects
+        # ~-33.3 units, notional ~3_333 > 0.3 * 10_000.
+        flip = ExecutionEngine(max_position_fraction = 0.3)
+        @test execute_signal!(flip, buy, 10_000.0; position_units_override = 10.0).executed
+        dec_flip = execute_signal!(flip, sell, 10_000.0)
+        @test !dec_flip.executed
+        @test startswith(dec_flip.reason, "exceeds_max_position_fraction:")
+        @test flip.positions["MARKET-P"] == 10.0
+        # The same flip fits under a cap that admits the projected short (~3_333).
+        roomy_flip = ExecutionEngine(max_position_fraction = 0.34)
+        @test execute_signal!(roomy_flip, buy, 10_000.0; position_units_override = 10.0).executed
+        @test execute_signal!(roomy_flip, sell, 10_000.0).executed
+        @test roomy_flip.positions["MARKET-P"] ≈ 10.0 - k.units
+    end
+
     @testset "ExecutionEngine — invalid sizing inputs are rejected with a reason" begin
         engine = ExecutionEngine(max_position_size = 1_000.0)
         sig = TradeSignal("MARKET-D", Buy, 90.0, 1.0, 0.90f0, 0)

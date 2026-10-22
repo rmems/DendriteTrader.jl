@@ -57,12 +57,15 @@ Configuration for backtest runs.
 - `max_position_size`: optional absolute cap on order units (default `Inf`, no absolute
   cap). Kelly-sized entries above it are rejected (`max_position_reject`, reason prefix
   `exceeds_max_position:`), not shrunk to the cap. `NaN` or `<= 0` throws.
-- `max_position_fraction`: relative cap on entry notional over the current cash balance
-  (default `DEFAULT_MAX_POSITION_FRACTION = 1.0`, no leverage). An entry with
-  `units * price > max_position_fraction * balance` is rejected (`max_position_reject`,
-  reason prefix `exceeds_max_position_fraction:`). Closes only reduce the position and
-  are exempt. Kelly-sized entries commit at most `0.5` of the balance, so the default
-  never binds on them. Must be finite and positive. Both caps apply when both are set.
+- `max_position_fraction`: relative cap on the projected per-ticker position notional
+  over the current cash balance (default `DEFAULT_MAX_POSITION_FRACTION = 1.0`). An
+  entry with `abs(position) * price > max_position_fraction * balance` is rejected
+  (`max_position_reject`, reason prefix `exceeds_max_position_fraction:`). Closes only
+  reduce the position and are exempt. A single Kelly-sized entry commits at most `0.5`
+  of the balance, so the default never binds on it (`run_backtest` ignores same-side
+  re-entry). The cap is per ticker and the cash balance is not reduced when a position
+  opens, so it does not bound total notional across tickers. Must be finite and
+  positive. Both caps apply when both are set.
 - `slippage_pct`: slippage percentage per trade (default 0.0)
 - `commission_pct`: commission percentage per trade (default 0.0)
 - `risk_free_rate`: annualized risk-free rate for Sharpe/Sortino (default 0.0)

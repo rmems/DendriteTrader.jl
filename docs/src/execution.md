@@ -43,7 +43,7 @@ Only the constructor keys below are accepted; omitted keys retain their defaults
 |-----|------|---------|
 | `confidence_threshold` | finite number in `[0, 1]` | `0.85` |
 | `max_position_size` | positive finite number (absolute unit cap) | none (`Inf`) |
-| `max_position_fraction` | positive finite number (order notional ÷ account balance) | `1.0` |
+| `max_position_fraction` | positive finite number (projected per-ticker position notional ÷ account balance) | `1.0` |
 | `max_portfolio_exposure` | positive finite number (gross notional, all tickers) | none (`Inf`) |
 | `payoff_ratio` | positive finite number | `1.5` |
 | `log_file` | string or YAML `null` | no event log |

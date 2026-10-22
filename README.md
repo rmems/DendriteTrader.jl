@@ -85,7 +85,7 @@ using DendriteTrader
 
 engine = ExecutionEngine(
     confidence_threshold = Float32(0.85),
-    max_position_fraction = 1.0,   # default: notional ≤ 1.0 × balance (no leverage)
+    max_position_fraction = 1.0,   # default: per-ticker position notional ≤ 1.0 × balance
     payoff_ratio         = 1.5,
     log_file             = "events.jsonl",
 )
@@ -124,7 +124,7 @@ engine = load_config("engine.toml")
 The complete schema is `confidence_threshold` (finite number from `0` to `1`),
 `max_position_size` (positive finite number; optional absolute unit cap, omit for none),
 `max_position_fraction` (positive finite number; relative cap on order notional over the
-account balance, default `1.0`), `max_portfolio_exposure` (positive
+account balance for the projected per-ticker position, default `1.0`), `max_portfolio_exposure` (positive
 number: cap on total gross notional exposure across all tickers, valued at each
 ticker's last execution price), `payoff_ratio` (positive finite number),
 `log_file` (string, or YAML `null`), and `truncate` (boolean). A

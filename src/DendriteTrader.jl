@@ -574,16 +574,20 @@ Stateful execution engine with confidence gating and position management.
                           values throw `ArgumentError`. Kelly-sized units above the
                           cap are rejected (`max_position_reject`, reason prefix
                           `exceeds_max_position:`), not shrunk to the cap.
-- `max_position_fraction`: relative cap on order notional as a fraction of the
-                          account balance (default `1.0`).
-                          An order is rejected when
-                          `units * price > max_position_fraction * account_balance`
+- `max_position_fraction`: relative cap on the projected per-ticker position as a
+                          fraction of the account balance (default `1.0`). An
+                          order is rejected when
+                          `abs(current_units ± units) * price >
+                          max_position_fraction * account_balance`
                           (`max_position_reject`, reason prefix
                           `exceeds_max_position_fraction:`). Must be finite and
                           positive. Orders that only reduce the existing position in
-                          that ticker are exempt, because both the price and the
-                          balance can drift after entry and a cap must not trap a
-                          position. See [`DEFAULT_MAX_POSITION_FRACTION`](@ref) for
+                          that ticker (opposite side, size at most the position) are
+                          exempt, because both the price and the balance can drift
+                          after entry and a cap must not trap a position (compare
+                          #111 for `max_portfolio_exposure`). A sell larger than a
+                          long position is a flip and is checked. The cap is per
+                          ticker; `max_portfolio_exposure` bounds the portfolio. See [`DEFAULT_MAX_POSITION_FRACTION`](@ref) for
                           why the default never binds on Kelly-sized entries. When
                           both caps are set, both apply.
 - `max_portfolio_exposure`: cap on total gross notional exposure in price
@@ -670,18 +674,21 @@ end
 """
     DEFAULT_MAX_POSITION_FRACTION = 1.0
 
-Default relative position cap for [`ExecutionEngine`](@ref) and `BacktestConfig`: an
-order's notional (`units * price`) may not exceed this fraction of the account
-balance, i.e. no leverage.
+Default relative position cap for [`ExecutionEngine`](@ref) and `BacktestConfig`: the
+projected position in one ticker after an order, valued at the order price
+(`abs(current_units ± units) * price`), may not exceed this fraction of the account
+balance. The cap is per ticker. It does not bound the sum across tickers (use
+`max_portfolio_exposure` for that), so it is not a portfolio-wide leverage limit.
 
 Why `1.0`: `execute_signal!` sizes with [`size_position`](@ref) at its default
 `kelly_scalar = 0.5`, whose Kelly fraction is `0.5 * (p*b - q)/b`, capped to `[0, 1]`.
 Because `(p*b - q)/b <= 1` for every `p` in `[0, 1]` and `b > 0`, a Kelly-sized entry
 commits at most `0.5` of the balance (reached only at confidence `1.0`). A default of
-`1.0` therefore never rejects a Kelly-sized entry and leaves a 2x margin, so
-floating-point rounding at the boundary cannot flip a decision. It is a backstop
-against unlevered-notional violations (for example an explicit
-`position_units_override`), not a sizing policy.
+`1.0` therefore never rejects a single Kelly-sized entry from flat and leaves a 2x
+margin, so floating-point rounding at the boundary cannot flip that decision. It does
+bind when repeated same-side entries accumulate: a third Kelly buy at confidence `0.92`
+(about `0.433` each) projects about `1.3` of the balance and is rejected. It is a
+backstop, not a sizing policy.
 
 The `[0, 0.20]` output cap of [`kelly_fraction`](@ref) does not apply here:
 `execute_signal!` does not call `kelly_fraction`, so Kelly-sized entries can commit up
@@ -825,12 +832,16 @@ function _position_cap_violation(
     end
     units > 0.0 || return nothing
     _reduces_position(current, units, side) && return nothing
-    notional = units * price
+    # The cap is on the resulting position in this ticker, not on the order alone, so
+    # repeated same-side entries cannot each pass while the position grows past it.
+    projected = side == Buy ? current + units : current - units
+    notional = abs(projected) * price
     limit = engine.max_position_fraction * account_balance
     # `!(notional <= limit)` also rejects a NaN notional or limit instead of passing it.
     if !(notional <= limit)
-        return "exceeds_max_position_fraction: notional $(notional) (units $(units) × price $(price)) " *
-               "exceeds max_position_fraction $(engine.max_position_fraction) × " *
+        return "exceeds_max_position_fraction: projected position notional $(notional) " *
+               "(|position| $(abs(projected)) × price $(price)) exceeds " *
+               "max_position_fraction $(engine.max_position_fraction) × " *
                "account_balance $(account_balance) = $(limit)"
     end
     return nothing
@@ -859,10 +870,11 @@ Every rejection increments `rejected_signals`, records a `SignalEvent`, and retu
 - `max_position_reject`: a position cap was hit. The reason names the cap:
   - prefix `exceeds_max_position:` when Kelly-sized units exceed the absolute
     `engine.max_position_size` (default `Inf`, no absolute cap);
-  - prefix `exceeds_max_position_fraction:` when the order notional
-    `units * price` exceeds `engine.max_position_fraction * account_balance`
-    (default fraction `1.0`). Orders that only reduce the existing position in the
-    ticker are exempt from this relative cap.
+  - prefix `exceeds_max_position_fraction:` when the projected position in the
+    ticker, `abs(current_units ± units) * signal.price`, exceeds
+    `engine.max_position_fraction * account_balance` (default fraction `1.0`). Orders
+    that only reduce the existing position in the ticker are exempt from this
+    relative cap; a flip past flat is checked.
   When both caps are set, both apply and the absolute cap is checked first. Nothing is
   shrunk to a cap: the whole order is rejected and no position changes.
 - `zero_reject`: the Kelly fraction is zero (no edge), so the sized position is zero.
@@ -870,7 +882,7 @@ Every rejection increments `rejected_signals`, records a `SignalEvent`, and retu
 
 An invalid `position_units_override` (non-finite, negative, above `max_position_size`,
 or, for an order that does not only reduce the position, with notional above
-`max_position_fraction * account_balance`) is a caller error and throws
+`max_position_fraction * account_balance` for the projected position) is a caller error and throws
 `ArgumentError` whose message carries the same cap reason. When an override
 is supplied and `account_balance` is finite but `<= 0`, Kelly sizing is skipped (the
 override quantity does not depend on it) so an existing position can still be closed;
@@ -997,9 +1009,9 @@ function execute_signal!(
     end
 
     # Position caps reject, never shrink (research invariant 7). The absolute unit cap
-    # applies to every order. The relative notional cap applies to every order except one
-    # that only reduces the existing position in this ticker: price and balance drift
-    # after entry, and a cap that blocks a reduction would trap the position.
+    # applies to every order. The relative cap (projected position in this ticker) applies
+    # to every order except one that only reduces the existing position: price and
+    # balance drift after entry, and a cap that blocks a reduction would trap the position.
     cap_reason =
         _position_cap_violation(engine, units, price, account_balance, current, signal.side)
     if cap_reason !== nothing
