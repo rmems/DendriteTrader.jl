@@ -123,9 +123,9 @@ engine = load_config("engine.toml")
 
 The complete schema is `confidence_threshold` (finite number from `0` to `1`),
 `max_position_size` (positive finite number; optional absolute unit cap, omit for none),
-`max_position_fraction` (positive finite number; relative cap on order notional over the
-`account_balance` passed to `execute_signal!` for the projected per-ticker position,
-default `1.0`; `run_backtest` passes its cash balance, which does not fall when a position opens (only commissions and realized PnL change it)), `max_portfolio_exposure` (positive
+`max_position_fraction` (positive finite number; relative cap on projected per-ticker
+position notional over the `account_balance` passed to `execute_signal!`, existing units
+included, default `1.0`; `run_backtest` passes its cash balance, which does not fall when a position opens (only commissions and realized PnL change it)), `max_portfolio_exposure` (positive
 number: cap on total gross notional exposure across all tickers, valued at each
 ticker's last execution price), `payoff_ratio` (positive finite number),
 `log_file` (string, or YAML `null`), and `truncate` (boolean). A
