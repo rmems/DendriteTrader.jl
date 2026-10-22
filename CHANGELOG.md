@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking: sizing rejects invalid inputs instead of clamping)
+
+Research invariant 7: unsupported or invalid sizes and prices are rejected with an
+explicit reason, never silently clamped or coerced. Existing keyword calls keep
+working, but the public API changes: `ExecutionEngine`, the `BacktestConfig` keyword
+constructor and `load_config` accept a new `max_position_fraction`; `BacktestConfig`
+gains a ninth field (its full positional constructor takes nine arguments, and an
+eight-argument form is kept); `DEFAULT_MAX_POSITION_FRACTION` is a new export; and the
+`max_position_size` default changes from `10.0` to `Inf`.
+
+- `execute_signal!` no longer caps Kelly-sized units with `min(units, max_position_size)`.
+  A signal whose Kelly size exceeds a position cap is rejected: `executed = false`,
+  `rejected_signals` is incremented, a `max_position_reject` event is recorded, and the
+  reason names the cap (`exceeds_max_position:` or `exceeds_max_position_fraction:`).
+  Sizes exactly at a cap are accepted.
+- **Default position cap is now relative.** New `max_position_fraction` on
+  `ExecutionEngine`, `BacktestConfig` and `load_config` (default
+  `DEFAULT_MAX_POSITION_FRACTION = 1.0`): an order is rejected when the projected
+  position in the ticker, `abs(current_units ± units) * price`, exceeds
+  `max_position_fraction * account_balance` (the `account_balance` passed to
+  `execute_signal!`; `run_backtest` passes its cash balance, which does not fall when a position opens (only commissions and realized PnL change it)). Orders that only reduce the existing
+  position in the ticker are exempt; a flip past flat is checked. The cap is per ticker
+  and does not bound total notional across tickers (`max_portfolio_exposure` does). `max_position_size` becomes an
+  optional absolute unit cap with default `Inf` (was `10.0`); when both are set, both
+  apply. The fixed 10-unit default rejected ordinary entries (a `10_000` balance at
+  price `100` sizes ~46 units at confidence `0.95`), so a default backtest made zero
+  trades. Why `1.0`: `execute_signal!` sizes with `size_position` at
+  `kelly_scalar = 0.5`, which commits at most `0.5` of the balance; the `[0, 0.20]`
+  output cap belongs to `kelly_fraction`, which this path does not use, so a relative
+  default such as `0.25` would still reject ordinary entries. `1.0` never binds on a
+  single Kelly-sized entry from flat; it binds when same-side entries accumulate (a
+  third Kelly buy at confidence `0.92` is rejected) and on oversized explicit quantities.
+- `ExecutionEngine` and `BacktestConfig` throw `ArgumentError` for a `max_position_fraction`
+  that is `NaN`, `±Inf` or `<= 0`, and for a `max_position_size` that is `NaN` or `<= 0`
+  (`Inf` means no absolute cap). An explicit `position_units_override` above either cap
+  throws `ArgumentError` carrying the cap reason. `BacktestConfig` keeps an eight-argument
+  positional constructor that uses the default relative cap.
+- `execute_signal!` rejects invalid sizing inputs (`price <= 0`, `account_balance <= 0`,
+  non-finite values, confidence outside `[0, 1]`) with a `sizing_reject` event and a reason
+  starting with `invalid_sizing_input:`. Previously these were a `zero_reject` with the
+  generic reason `"zero-sized position"`. An explicit `position_units_override` (used by
+  `run_backtest` to close a position) still proceeds when the balance is finite but
+  `<= 0`, because it does not use Kelly sizing; the price is still validated.
+- `size_position` throws `ArgumentError` when `price <= 0`, `account_balance <= 0`, either
+  is non-finite, `confidence` is outside `[0, 1]` or non-finite, `payoff_ratio <= 0`, or
+  `kelly_scalar < 0`. Previously it returned a zero-unit `PositionSize` with no reason for
+  non-positive price/balance, clamped `confidence` into `[0, 1]`, and floored
+  `payoff_ratio` at `1e-9`. A negative edge still returns a zero-unit position.
+- `kelly_fraction` throws `ArgumentError` when `win_rate` is outside `[0, 1]` or
+  non-finite, or `avg_win`/`avg_loss` is non-positive or non-finite (previously clamped
+  and floored at `1e-9`). It also throws when the derived ratio `avg_win / avg_loss`
+  overflows or underflows (previously the result was `NaN`). The `[0, 0.20]` output cap is
+  unchanged documented policy. `size_position` likewise throws if the derived unit count
+  overflows. `kelly_scalar = 0` stays valid and yields a zero-unit position (`zero_reject`).
+- `half_kelly` (and `from_confidence`, which delegates to it) throws `ArgumentError` when
+  `p` is outside `[0, 1]` or non-finite, or `b` is non-positive or non-finite (previously
+  clamped and floored at `1e-9`). The `[0, 1]` output cap is unchanged.
+- A `NaN` `max_position_size` previously disabled the hard cap, because `units > NaN`
+  is false; it now throws. `load_config` already rejected non-positive values from files.
+- `run_backtest` inherits the engine change: an entry above a configured cap is rejected
+  rather than opened at the cap. Pass `max_position_size` to restore an absolute unit cap.
+
 ### Added
 
 - **Latency-aware paper simulator (RM-1864)**: `simulate!` replays a `ReplaySession` with separate information, decision, activation and fill clocks (`FixedLatency`, `ReceiveTimestampFeed` / `FixedFeedDelay`), an explicitly approximate `L2QueueApproximation` fill model, integer `FeeSchedule`, bounded `RiskLimits`, and a per-step reconciled `PaperPortfolio` evaluation state. `SimulationResult` stores all assumptions, seeds and a SHA-256 result hash. Vendored `metabolic-ledger.parity.v1` fixtures are replayed with `run_parity_fixture`; `parity_document` emits long/flat runs in the same schema. Paper only; no order submission. Runs with any zero order-entry, cancel or report latency are labelled `diagnostic_zero_latency` in their assumptions and hash (`is_zero_latency_diagnostic`).

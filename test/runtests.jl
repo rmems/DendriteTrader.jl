@@ -155,7 +155,8 @@ include("spikes.jl")
     end
 
     @testset "ExecutionEngine — confidence gate" begin
-        engine = ExecutionEngine(confidence_threshold = 0.85f0)
+        # Cap above the Kelly size (~46 units) so the gate, not the cap, is under test.
+        engine = ExecutionEngine(confidence_threshold = 0.85f0, max_position_size = 1_000.0)
 
         # Signal above threshold -> executed
         sig_hi = TradeSignal(
@@ -190,7 +191,8 @@ include("spikes.jl")
     end
 
     @testset "ExecutionEngine — position tracking" begin
-        engine = ExecutionEngine()
+        # Kelly units at price 0.03 are ~7_000; raise the cap so they are not rejected.
+        engine = ExecutionEngine(max_position_size = 1e6)
         sig = TradeSignal(
             Dict(
                 "ticker"=>"MARKET-C",
@@ -206,7 +208,7 @@ include("spikes.jl")
     end
 
     @testset "fill_rate" begin
-        engine = ExecutionEngine(confidence_threshold = 0.85f0)
+        engine = ExecutionEngine(confidence_threshold = 0.85f0, max_position_size = 1_000.0)
         for conf in [0.90, 0.70, 0.88, 0.60]
             s = TradeSignal(
                 Dict(
@@ -274,12 +276,116 @@ include("spikes.jl")
         pos_hi = size_position(confidence = 0.95, price = 100.0, account_balance = 10_000.0)
         pos_lo = size_position(confidence = 0.72, price = 100.0, account_balance = 10_000.0)
         @test pos_hi.units >= pos_lo.units
-
-        @test size_position(confidence = 0.90, price = 0.0, account_balance = 10_000.0).units == 0.0
-        @test size_position(confidence = 0.90, price = 100.0, account_balance = -1.0).units == 0.0
     end
 
-    @testset "ExecutionEngine — zero-sized rejection and capped units" begin
+    @testset "Kelly sizing rejects invalid inputs (no clamping)" begin
+        # kelly_fraction: win_rate outside [0, 1] or non-finite, non-positive avg_win/avg_loss
+        @test_throws ArgumentError kelly_fraction(win_rate = 1.2, avg_win = 1.0, avg_loss = 1.0)
+        @test_throws ArgumentError kelly_fraction(win_rate = -0.1, avg_win = 1.0, avg_loss = 1.0)
+        @test_throws ArgumentError kelly_fraction(win_rate = NaN, avg_win = 1.0, avg_loss = 1.0)
+        @test_throws ArgumentError kelly_fraction(win_rate = 0.5, avg_win = 0.0, avg_loss = 1.0)
+        @test_throws ArgumentError kelly_fraction(win_rate = 0.5, avg_win = -1.0, avg_loss = 1.0)
+        @test_throws ArgumentError kelly_fraction(win_rate = 0.5, avg_win = 1.0, avg_loss = 0.0)
+        @test_throws ArgumentError kelly_fraction(win_rate = 0.5, avg_win = 1.0, avg_loss = -2.0)
+        @test_throws ArgumentError kelly_fraction(win_rate = 0.5, avg_win = Inf, avg_loss = 1.0)
+        # Both inputs finite and positive, but the derived ratio overflows (Inf) or
+        # underflows (0.0); previously this produced NaN instead of a capped fraction.
+        @test isinf(1e308 / 1e-308)
+        @test 1e-308 / 1e308 == 0.0
+        @test_throws ArgumentError kelly_fraction(
+            win_rate = 0.5,
+            avg_win = 1e308,
+            avg_loss = 1e-308,
+        )
+        @test_throws ArgumentError kelly_fraction(
+            win_rate = 0.5,
+            avg_win = 1e-308,
+            avg_loss = 1e308,
+        )
+        # Boundary values remain valid; the output cap [0, 0.20] is policy and stays.
+        @test kelly_fraction(win_rate = 1.0, avg_win = 1.0, avg_loss = 1.0) == 0.20
+        @test kelly_fraction(win_rate = 0.0, avg_win = 1.0, avg_loss = 1.0) == 0.0
+
+        # half_kelly / from_confidence
+        @test_throws ArgumentError half_kelly(1.5, 1.5)
+        @test_throws ArgumentError half_kelly(-0.01, 1.5)
+        @test_throws ArgumentError half_kelly(NaN, 1.5)
+        @test_throws ArgumentError half_kelly(0.6, 0.0)
+        @test_throws ArgumentError half_kelly(0.6, -1.0)
+        @test_throws ArgumentError half_kelly(0.6, Inf)
+        @test_throws ArgumentError from_confidence(confidence = 1.01)
+        @test_throws ArgumentError from_confidence(confidence = 0.9, payoff_ratio = 0.0)
+        @test half_kelly(1.0, 1.0) == 0.5
+        @test half_kelly(0.0, 1.0) == 0.0
+
+        # size_position: previously returned a zero-unit PositionSize with no reason.
+        @test_throws ArgumentError size_position(
+            confidence = 0.90,
+            price = 0.0,
+            account_balance = 10_000.0,
+        )
+        @test_throws ArgumentError size_position(
+            confidence = 0.90,
+            price = -5.0,
+            account_balance = 10_000.0,
+        )
+        @test_throws ArgumentError size_position(
+            confidence = 0.90,
+            price = NaN,
+            account_balance = 10_000.0,
+        )
+        @test_throws ArgumentError size_position(
+            confidence = 0.90,
+            price = 100.0,
+            account_balance = -1.0,
+        )
+        @test_throws ArgumentError size_position(
+            confidence = 0.90,
+            price = 100.0,
+            account_balance = 0.0,
+        )
+        @test_throws ArgumentError size_position(
+            confidence = 0.90,
+            price = 100.0,
+            account_balance = Inf,
+        )
+        # Confidence was previously clamped into [0, 1].
+        @test_throws ArgumentError size_position(
+            confidence = 1.5,
+            price = 100.0,
+            account_balance = 10_000.0,
+        )
+        @test_throws ArgumentError size_position(
+            confidence = -0.2,
+            price = 100.0,
+            account_balance = 10_000.0,
+        )
+        @test_throws ArgumentError size_position(
+            confidence = 0.9,
+            price = 100.0,
+            account_balance = 10_000.0,
+            payoff_ratio = 0.0,
+        )
+        @test_throws ArgumentError size_position(
+            confidence = 0.9,
+            price = 100.0,
+            account_balance = 10_000.0,
+            kelly_scalar = -0.5,
+        )
+        # Valid finite inputs whose derived unit count overflows are rejected.
+        @test_throws ArgumentError size_position(
+            confidence = 0.9,
+            price = 1e-308,
+            account_balance = 1e308,
+        )
+        # A negative edge is a real zero-size decision, not a rejection.
+        no_edge = size_position(confidence = 0.30, price = 100.0, account_balance = 10_000.0)
+        @test no_edge.units == 0.0
+        @test no_edge.kelly_fraction == 0.0
+        @test no_edge.confidence == 0.30
+    end
+
+    @testset "ExecutionEngine — rejects Kelly units above max_position_size" begin
         engine = ExecutionEngine(max_position_size = 10.0)
         sig = TradeSignal(
             Dict(
@@ -291,22 +397,399 @@ include("spikes.jl")
                 "timestamp_ns"=>0,
             ),
         )
-        dec = execute_signal!(engine, sig, 10_000.0)
-        @test dec.executed
-        @test dec.position_units == 10.0
         k_model = size_position(
             confidence = Float64(sig.confidence),
             price = 90.0,
             account_balance = 10_000.0,
             payoff_ratio = engine.payoff_ratio,
-        ).kelly_fraction
-        @test dec.kelly_fraction ≈ k_model
-        @test dec.kelly_fraction > dec.applied_fraction
-        @test dec.applied_fraction ≈ 0.09
+        )
+        @test k_model.units > engine.max_position_size
 
-        zero_dec = execute_signal!(engine, sig, 0.0)
-        @test !zero_dec.executed
-        @test zero_dec.reason == "zero-sized position"
+        # Previously: executed with units silently capped to 10.0.
+        dec = execute_signal!(engine, sig, 10_000.0)
+        @test !dec.executed
+        @test startswith(dec.reason, "exceeds_max_position:")
+        @test dec.position_units == 0.0
+        @test dec.applied_fraction == 0.0
+        @test dec.kelly_fraction ≈ k_model.kelly_fraction
+        @test engine.events[end].event_type == "max_position_reject"
+        @test engine.events[end].reason == dec.reason
+        @test engine.rejected_signals == 1
+        @test engine.executed_signals == 0
+        @test !haskey(engine.positions, "MARKET-D")
+        @test !haskey(engine.last_prices, "MARKET-D")
+
+        # The absolute cap must be positive: a NaN cap would make `units > cap` false
+        # and let any Kelly size through. Inf is the documented "no absolute cap".
+        for bad_cap in (NaN, -Inf, 0.0, -1.0)
+            @test_throws ArgumentError ExecutionEngine(max_position_size = bad_cap)
+            @test_throws ArgumentError BacktestConfig(max_position_size = bad_cap)
+        end
+        @test ExecutionEngine(max_position_size = Inf).max_position_size == Inf
+
+        # Units exactly at the cap are accepted (the cap is inclusive).
+        at_cap = ExecutionEngine(max_position_size = k_model.units)
+        dec_at = execute_signal!(at_cap, sig, 10_000.0)
+        @test dec_at.executed
+        @test dec_at.position_units == k_model.units
+
+        # With a cap above the Kelly size the full, unshrunk size executes.
+        roomy = ExecutionEngine(max_position_size = 1_000.0)
+        dec_ok = execute_signal!(roomy, sig, 10_000.0)
+        @test dec_ok.executed
+        @test dec_ok.position_units ≈ k_model.units
+        # applied_fraction = units * price / balance = (k * balance / price) * price / balance = k
+        @test dec_ok.applied_fraction ≈ k_model.kelly_fraction
+        @test dec_ok.kelly_fraction ≈ k_model.kelly_fraction
+    end
+
+    @testset "ExecutionEngine — relative position cap (max_position_fraction)" begin
+        # Kelly at confidence 0.95, payoff 1.5, kelly_scalar 0.5: k = 0.5 * (0.95*1.5 - 0.05)/1.5
+        # ≈ 0.458, i.e. ~45.8 units at price 100 on a 10_000 balance.
+        sig = TradeSignal("MARKET-R", Buy, 100.0, 1.0, 0.95f0, 0)
+        k = size_position(
+            confidence = Float64(sig.confidence),
+            price = 100.0,
+            account_balance = 10_000.0,
+        )
+        @test 0.45 < k.kelly_fraction < 0.5
+
+        # Defaults: no absolute cap, relative cap 1.0. The ordinary Kelly entry executes
+        # at its full, unshrunk size.
+        default_engine = ExecutionEngine()
+        @test default_engine.max_position_size == Inf
+        @test default_engine.max_position_fraction == DEFAULT_MAX_POSITION_FRACTION == 1.0
+        dec = execute_signal!(default_engine, sig, 10_000.0)
+        @test dec.executed
+        @test dec.position_units == k.units
+
+        # Kelly-sized entries commit at most 0.5 of the balance (confidence 1.0, any
+        # payoff), so the default relative cap never binds on them.
+        for conf in (0.86f0, 0.9f0, 0.99f0, 1.0f0), b in (0.5, 1.5, 10.0)
+            e = ExecutionEngine(payoff_ratio = b)
+            d = execute_signal!(e, TradeSignal("MARKET-R", Buy, 3.0, 1.0, conf, 0), 777.0)
+            @test d.executed || e.events[end].event_type == "zero_reject"
+            @test d.applied_fraction <= 0.5 + 1e-12
+        end
+
+        # Relative-cap rejection with a reason naming the cap. 0.25 is below k ≈ 0.458.
+        tight = ExecutionEngine(max_position_fraction = 0.25)
+        rej = execute_signal!(tight, sig, 10_000.0)
+        @test !rej.executed
+        @test startswith(rej.reason, "exceeds_max_position_fraction:")
+        @test occursin("max_position_fraction 0.25", rej.reason)
+        @test occursin("account_balance 10000.0", rej.reason)
+        @test rej.position_units == 0.0
+        @test rej.applied_fraction == 0.0
+        @test rej.kelly_fraction ≈ k.kelly_fraction
+        @test tight.events[end].event_type == "max_position_reject"
+        @test tight.events[end].reason == rej.reason
+        @test tight.rejected_signals == 1
+        @test tight.executed_signals == 0
+        @test isempty(tight.positions)
+        @test isempty(tight.last_prices)
+
+        # The relative cap scales with balance: the same signal fits at a fraction of
+        # 0.5 on any positive balance, because the Kelly notional is k * balance.
+        for bal in (100.0, 10_000.0, 1e7)
+            e = ExecutionEngine(max_position_fraction = 0.5)
+            @test execute_signal!(e, sig, bal).executed
+        end
+
+        # Absolute-cap rejection with a reason naming that cap (relative cap is roomy).
+        abs_only = ExecutionEngine(max_position_size = 10.0)
+        rej_abs = execute_signal!(abs_only, sig, 10_000.0)
+        @test !rej_abs.executed
+        @test startswith(rej_abs.reason, "exceeds_max_position:")
+        @test occursin("max_position_size 10.0", rej_abs.reason)
+        @test !occursin("max_position_fraction", rej_abs.reason)
+
+        # Both caps set: both apply, and either can reject.
+        both_ok = ExecutionEngine(max_position_size = 50.0, max_position_fraction = 0.5)
+        @test execute_signal!(both_ok, sig, 10_000.0).executed
+        both_abs = ExecutionEngine(max_position_size = 40.0, max_position_fraction = 0.5)
+        r1 = execute_signal!(both_abs, sig, 10_000.0)
+        @test !r1.executed && startswith(r1.reason, "exceeds_max_position:")
+        both_rel = ExecutionEngine(max_position_size = 50.0, max_position_fraction = 0.4)
+        r2 = execute_signal!(both_rel, sig, 10_000.0)
+        @test !r2.executed && startswith(r2.reason, "exceeds_max_position_fraction:")
+        # Both violated: the absolute cap is checked first and named.
+        both_both = ExecutionEngine(max_position_size = 40.0, max_position_fraction = 0.4)
+        r3 = execute_signal!(both_both, sig, 10_000.0)
+        @test !r3.executed && startswith(r3.reason, "exceeds_max_position:")
+        @test both_both.events[end].event_type == "max_position_reject"
+
+        # The relative cap is inclusive: notional exactly at the limit is accepted.
+        at_limit = ExecutionEngine(max_position_fraction = 0.5)
+        flat = TradeSignal("MARKET-R", Buy, 100.0, 1.0, 0.95f0, 0)
+        d_at = execute_signal!(at_limit, flat, 10_000.0; position_units_override = 50.0)
+        @test d_at.executed
+        @test d_at.position_units == 50.0
+
+        # Override path: an explicit quantity whose notional exceeds the relative cap is
+        # rejected (ArgumentError naming the cap), never executed at a smaller size.
+        over_rel = ExecutionEngine(max_position_fraction = 0.5)
+        err = try
+            execute_signal!(over_rel, flat, 10_000.0; position_units_override = 50.5)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test occursin("exceeds_max_position_fraction:", err.msg)
+        @test isempty(over_rel.positions)
+        @test over_rel.executed_signals == 0
+        # Same for the absolute cap.
+        over_abs = ExecutionEngine(max_position_size = 10.0)
+        err_abs = try
+            execute_signal!(over_abs, flat, 10_000.0; position_units_override = 10.5)
+            nothing
+        catch e
+            e
+        end
+        @test err_abs isa ArgumentError
+        @test occursin("exceeds_max_position:", err_abs.msg)
+        @test isempty(over_abs.positions)
+
+        # A reduce-only order is exempt from the relative cap: after the price triples,
+        # closing 50 units @ 300 (notional 15_000 > 0.5 * 10_000) must still execute.
+        closer = ExecutionEngine(max_position_fraction = 0.5)
+        @test execute_signal!(closer, flat, 10_000.0; position_units_override = 50.0).executed
+        up = TradeSignal("MARKET-R", Sell, 300.0, 1.0, 0.95f0, 1)
+        d_close = execute_signal!(closer, up, 10_000.0; position_units_override = 50.0)
+        @test d_close.executed
+        @test closer.positions["MARKET-R"] == 0.0
+        # A flip (sell more than held) is not reduce-only and is checked: from +50,
+        # selling 100 @ 300 is notional 30_000 > 5_000.
+        flipper = ExecutionEngine(max_position_fraction = 0.5)
+        @test execute_signal!(flipper, flat, 10_000.0; position_units_override = 50.0).executed
+        @test_throws ArgumentError execute_signal!(
+            flipper,
+            up,
+            10_000.0;
+            position_units_override = 100.0,
+        )
+        @test flipper.positions["MARKET-R"] == 50.0
+        # The absolute cap still applies to reductions (units do not drift).
+        abs_close = ExecutionEngine(max_position_size = 50.0)
+        @test execute_signal!(abs_close, flat, 10_000.0; position_units_override = 50.0).executed
+        @test execute_signal!(abs_close, up, 10_000.0; position_units_override = 50.0).executed
+
+        # Invalid caps throw at construction, for both the engine and BacktestConfig.
+        for bad_fraction in (NaN, Inf, -Inf, 0.0, -0.5)
+            @test_throws ArgumentError ExecutionEngine(max_position_fraction = bad_fraction)
+            @test_throws ArgumentError BacktestConfig(max_position_fraction = bad_fraction)
+        end
+        for bad_cap in (NaN, 0.0, -1.0)
+            @test_throws ArgumentError ExecutionEngine(max_position_size = bad_cap)
+            @test_throws ArgumentError BacktestConfig(max_position_size = bad_cap)
+        end
+        # Fractions above 1 (leverage) are a valid explicit choice.
+        @test ExecutionEngine(max_position_fraction = 2.0).max_position_fraction == 2.0
+
+        # Invalid balance or price on the reject path: rejected with a reason before any
+        # cap is evaluated, never coerced.
+        cap_engine = ExecutionEngine(max_position_fraction = 0.25)
+        for bad_balance in (0.0, -1.0, NaN, Inf, -Inf)
+            d = execute_signal!(cap_engine, sig, bad_balance)
+            @test !d.executed
+            @test startswith(d.reason, "invalid_sizing_input:")
+            @test occursin("account_balance", d.reason)
+        end
+        for bad_price in (0.0, -1.0, NaN, Inf)
+            d = execute_signal!(
+                cap_engine,
+                TradeSignal("MARKET-R", Buy, bad_price, 1.0, 0.95f0, 0),
+                10_000.0,
+            )
+            @test !d.executed
+            @test startswith(d.reason, "invalid_sizing_input:")
+            @test occursin("price", d.reason)
+        end
+        @test isempty(cap_engine.positions)
+        # A finite balance <= 0 with an override that opens exposure fails the relative
+        # cap (limit <= 0), so an unbacked opening order cannot slip through the carve-out.
+        @test_throws ArgumentError execute_signal!(
+            ExecutionEngine(),
+            flat,
+            0.0;
+            position_units_override = 1.0,
+        )
+
+        # Config files accept max_position_fraction; omitted keys give the new defaults.
+        mktempdir() do dir
+            path = joinpath(dir, "engine.toml")
+            write(path, "max_position_fraction = 0.3\nmax_position_size = 7\n")
+            cfg = load_config(path)
+            @test cfg.max_position_fraction == 0.3
+            @test cfg.max_position_size == 7.0
+            for bad in ("0", "-0.1", "\"x\"", "inf", "nan")
+                bad_path = joinpath(dir, "bad.toml")
+                write(bad_path, "max_position_fraction = $bad\n")
+                @test_throws ArgumentError load_config(bad_path)
+            end
+            empty_path = joinpath(dir, "empty.toml")
+            write(empty_path, "")
+            d = load_config(empty_path)
+            @test d.max_position_size == Inf
+            @test d.max_position_fraction == 1.0
+        end
+    end
+
+    @testset "ExecutionEngine — relative cap checks the projected position" begin
+        # Kelly at confidence 0.92, payoff 1.5: k ≈ 0.433, ~43.3 units at price 100.
+        buy = TradeSignal("MARKET-P", Buy, 100.0, 1.0, 0.92f0, 0)
+        sell = TradeSignal("MARKET-P", Sell, 100.0, 1.0, 0.92f0, 1)
+        k = size_position(
+            confidence = Float64(buy.confidence),
+            price = 100.0,
+            account_balance = 10_000.0,
+        )
+        @test 0.43 < k.kelly_fraction < 0.44
+
+        # Three same-ticker Kelly buys at the default cap 1.0: the first two project
+        # ~0.433 and ~0.867 of the balance and execute; the third would project ~1.3 and
+        # is rejected whole, although the order alone (~0.433) is under the cap.
+        engine = ExecutionEngine()
+        @test execute_signal!(engine, buy, 10_000.0).executed
+        @test execute_signal!(engine, buy, 10_000.0).executed
+        held = engine.positions["MARKET-P"]
+        @test held ≈ 2 * k.units
+        third = execute_signal!(engine, buy, 10_000.0)
+        @test !third.executed
+        @test startswith(third.reason, "exceeds_max_position_fraction: projected position")
+        @test third.position_units == 0.0
+        @test engine.events[end].event_type == "max_position_reject"
+        @test engine.positions["MARKET-P"] == held
+
+        # A reducing Kelly sell (opposite side, smaller than the position) is allowed,
+        # even after the price rises so far that the remaining position is above the cap.
+        risen = TradeSignal("MARKET-P", Sell, 400.0, 1.0, 0.92f0, 2)
+        dec_reduce = execute_signal!(engine, risen, 10_000.0)
+        @test dec_reduce.executed
+        @test engine.positions["MARKET-P"] < held
+
+        # An oversized flip (sell more than the long position) is not a reduction: it is
+        # checked as a new short position. From +10, a Kelly sell of ~43.3 projects
+        # ~-33.3 units, notional ~3_333 > 0.3 * 10_000.
+        flip = ExecutionEngine(max_position_fraction = 0.3)
+        @test execute_signal!(flip, buy, 10_000.0; position_units_override = 10.0).executed
+        dec_flip = execute_signal!(flip, sell, 10_000.0)
+        @test !dec_flip.executed
+        @test startswith(dec_flip.reason, "exceeds_max_position_fraction:")
+        @test flip.positions["MARKET-P"] == 10.0
+        # The same flip fits under a cap that admits the projected short (~3_333).
+        roomy_flip = ExecutionEngine(max_position_fraction = 0.34)
+        @test execute_signal!(roomy_flip, buy, 10_000.0; position_units_override = 10.0).executed
+        @test execute_signal!(roomy_flip, sell, 10_000.0).executed
+        @test roomy_flip.positions["MARKET-P"] ≈ 10.0 - k.units
+    end
+
+    @testset "ExecutionEngine — invalid sizing inputs are rejected with a reason" begin
+        engine = ExecutionEngine(max_position_size = 1_000.0)
+        sig = TradeSignal("MARKET-D", Buy, 90.0, 1.0, 0.90f0, 0)
+
+        # Previously: zero_reject with "zero-sized position" and no specific cause.
+        for bad_balance in (0.0, -1.0, NaN)
+            dec = execute_signal!(engine, sig, bad_balance)
+            @test !dec.executed
+            @test startswith(dec.reason, "invalid_sizing_input:")
+            @test occursin("account_balance", dec.reason)
+            @test engine.events[end].event_type == "sizing_reject"
+        end
+
+        # TradeSignal can be constructed directly without validate_signal.
+        for bad_price in (0.0, -1.0, Inf)
+            bad = TradeSignal("MARKET-D", Buy, bad_price, 1.0, 0.90f0, 0)
+            dec = execute_signal!(engine, bad, 10_000.0)
+            @test !dec.executed
+            @test startswith(dec.reason, "invalid_sizing_input:")
+            @test occursin("price", dec.reason)
+            @test engine.events[end].event_type == "sizing_reject"
+        end
+
+        # Confidence above 1 passes the gate but was previously clamped to 1 for sizing.
+        over = TradeSignal("MARKET-D", Buy, 90.0, 1.0, 1.5f0, 0)
+        dec_over = execute_signal!(engine, over, 10_000.0)
+        @test !dec_over.executed
+        @test occursin("confidence", dec_over.reason)
+
+        @test engine.rejected_signals == 7
+        @test engine.executed_signals == 0
+        @test isempty(engine.positions)
+        @test isempty(engine.last_prices)
+
+        # A finite non-positive balance does not block an explicit-fill override
+        # that closes an open position; its quantity does not use Kelly sizing. The
+        # close only reduces the position, so the relative cap does not apply to it.
+        close_engine = ExecutionEngine(max_position_size = 10.0)
+        @test execute_signal!(close_engine, sig, 10_000.0; position_units_override = 10.0).executed
+        sell_sig = TradeSignal("MARKET-D", Sell, 90.0, 1.0, 0.90f0, 0)
+        close_dec = execute_signal!(close_engine, sell_sig, 0.0; position_units_override = 5.0)
+        @test close_dec.executed
+        @test close_dec.position_units == 5.0
+        @test close_dec.kelly_fraction == 0.0
+        # The override path still validates price.
+        bad_price_sig = TradeSignal("MARKET-D", Buy, -1.0, 1.0, 0.90f0, 0)
+        bad_close = execute_signal!(close_engine, bad_price_sig, 0.0; position_units_override = 5.0)
+        @test !bad_close.executed
+        @test startswith(bad_close.reason, "invalid_sizing_input:")
+        # The carve-out still validates confidence as size_position would. Confidence
+        # above 1 passes the gate, so it reaches the sizing check.
+        bad_conf_sig = TradeSignal("MARKET-D", Buy, 90.0, 1.0, 1.5f0, 0)
+        bc = execute_signal!(close_engine, bad_conf_sig, 0.0; position_units_override = 5.0)
+        @test !bc.executed
+        @test startswith(bc.reason, "invalid_sizing_input:")
+        @test occursin("confidence", bc.reason)
+        @test close_engine.events[end].event_type == "sizing_reject"
+        # Negative or NaN confidence never reaches sizing: the gate rejects it first.
+        for gated_conf in (-0.1f0, NaN32)
+            gated = TradeSignal("MARKET-D", Buy, 90.0, 1.0, gated_conf, 0)
+            g = execute_signal!(close_engine, gated, 0.0; position_units_override = 5.0)
+            @test !g.executed
+            @test close_engine.events[end].event_type == "gate_reject"
+        end
+        # The carve-out covers finite balances only: a non-finite balance is rejected
+        # even with an override.
+        for nonfinite in (-Inf, Inf, NaN)
+            nf = execute_signal!(close_engine, sig, nonfinite; position_units_override = 5.0)
+            @test !nf.executed
+            @test startswith(nf.reason, "invalid_sizing_input:")
+            @test occursin("account_balance", nf.reason)
+            @test close_engine.events[end].event_type == "sizing_reject"
+        end
+        @test close_engine.positions["MARKET-D"] == 5.0
+    end
+
+    @testset "ExecutionEngine — zero-edge sizing is a zero_reject" begin
+        engine = ExecutionEngine(confidence_threshold = 0.2f0)
+        sig = TradeSignal("MARKET-D", Buy, 90.0, 1.0, 0.30f0, 0)
+        dec = execute_signal!(engine, sig, 10_000.0)
+        @test !dec.executed
+        @test dec.reason == "zero-sized position"
+        @test engine.events[end].event_type == "zero_reject"
+    end
+
+    @testset "kelly_scalar = 0 is valid and yields a zero_reject" begin
+        zero_scaled = size_position(
+            confidence = 0.9,
+            price = 90.0,
+            account_balance = 10_000.0,
+            kelly_scalar = 0.0,
+        )
+        @test zero_scaled.units == 0.0
+        @test zero_scaled.kelly_fraction == 0.0
+
+        # execute_signal! sizes with the default kelly_scalar; feed its zero-unit path the
+        # same way a kelly_scalar = 0 result would reach it (zero units, valid inputs).
+        engine = ExecutionEngine(max_position_size = 1_000.0)
+        sig = TradeSignal("MARKET-D", Buy, 90.0, 1.0, 0.90f0, 0)
+        dec = execute_signal!(engine, sig, 10_000.0; position_units_override = zero_scaled.units)
+        @test !dec.executed
+        @test dec.reason == "zero-sized position"
+        @test engine.events[end].event_type == "zero_reject"
+        @test engine.rejected_signals == 1
+        @test isempty(engine.positions)
     end
 
     @testset "ExecutionEngine — portfolio exposure cap" begin
@@ -321,19 +804,27 @@ include("spikes.jl")
             ),
         )
 
-        # Units are capped at max_position_size=10; notional = 10 × price.
+        # Kelly-sized units above max_position_size are now rejected rather than capped,
+        # so these cases pin the fill quantity with `position_units_override = 10.0`
+        # (notional = 10 × price) to keep the exposure arithmetic exact.
+        sig10(engine, ticker, price, side) = execute_signal!(
+            engine,
+            sig(ticker, price, side),
+            10_000.0;
+            position_units_override = 10.0,
+        )
         engine = ExecutionEngine(max_position_size = 10.0, max_portfolio_exposure = 1_500.0)
-        dec_a = execute_signal!(engine, sig("MARKET-A", 100.0, "BUY"), 10_000.0)
+        dec_a = sig10(engine, "MARKET-A", 100.0, "BUY")
         @test dec_a.executed
         @test portfolio_risk(engine) ≈ 1_000.0
 
         # Second asset: 10 × 50 = 500 → total 1_500, exactly at the cap: accepted.
-        dec_b = execute_signal!(engine, sig("MARKET-B", 50.0, "BUY"), 10_000.0)
+        dec_b = sig10(engine, "MARKET-B", 50.0, "BUY")
         @test dec_b.executed
         @test portfolio_risk(engine) ≈ 1_500.0
 
         # A third asset would exceed the cap: rejected, positions unchanged.
-        dec_c = execute_signal!(engine, sig("MARKET-C", 100.0, "BUY"), 10_000.0)
+        dec_c = sig10(engine, "MARKET-C", 100.0, "BUY")
         @test !dec_c.executed
         @test occursin("portfolio exposure", dec_c.reason)
         @test haskey(engine.positions, "MARKET-C") == false
@@ -341,7 +832,7 @@ include("spikes.jl")
         @test engine.events[end].event_type == "portfolio_reject"
 
         # Reducing an existing position never violates the cap.
-        dec_sell = execute_signal!(engine, sig("MARKET-A", 100.0, "SELL"), 10_000.0)
+        dec_sell = sig10(engine, "MARKET-A", 100.0, "SELL")
         @test dec_sell.executed
         @test portfolio_risk(engine) ≈ 500.0
 
@@ -350,8 +841,8 @@ include("spikes.jl")
         # 1_000 - 1_000 + 4_000 = 4_000 → rejected (the old position stays
         # marked at 100 during projection, not revalued at 200).
         rising = ExecutionEngine(max_position_size = 10.0, max_portfolio_exposure = 3_500.0)
-        @test execute_signal!(rising, sig("MARKET-A", 100.0, "BUY"), 10_000.0).executed
-        dec_rise = execute_signal!(rising, sig("MARKET-A", 200.0, "BUY"), 10_000.0)
+        @test sig10(rising, "MARKET-A", 100.0, "BUY").executed
+        dec_rise = sig10(rising, "MARKET-A", 200.0, "BUY")
         @test !dec_rise.executed
         @test occursin("portfolio exposure", dec_rise.reason)
 
@@ -359,8 +850,8 @@ include("spikes.jl")
         # held, buying 10 @ 50 projects 1_000 - 1_000 + 1_000 = 1_000, which is
         # accepted, and the book then marks everything at 50.
         falling = ExecutionEngine(max_position_size = 10.0, max_portfolio_exposure = 1_200.0)
-        @test execute_signal!(falling, sig("MARKET-A", 100.0, "BUY"), 10_000.0).executed
-        dec_fall = execute_signal!(falling, sig("MARKET-A", 50.0, "BUY"), 10_000.0)
+        @test sig10(falling, "MARKET-A", 100.0, "BUY").executed
+        dec_fall = sig10(falling, "MARKET-A", 50.0, "BUY")
         @test dec_fall.executed
         @test portfolio_risk(falling) ≈ 1_000.0
 
@@ -372,7 +863,7 @@ include("spikes.jl")
         # Unlimited by default.
         default_engine = ExecutionEngine()
         for i in 1:5
-            @test execute_signal!(default_engine, sig("MARKET-$i", 100.0, "BUY"), 10_000.0).executed
+            @test sig10(default_engine, "MARKET-$i", 100.0, "BUY").executed
         end
         @test portfolio_risk(default_engine) ≈ 5_000.0
 
@@ -485,7 +976,7 @@ include("spikes.jl")
     end
     @testset "Sell and Neutral signals" begin
         @testset "Sell signal on existing position decrements position" begin
-            engine = ExecutionEngine()
+            engine = ExecutionEngine(max_position_size = 1_000.0)
             buy = TradeSignal(
                 Dict(
                     "ticker"=>"MARKET-E",
@@ -517,7 +1008,7 @@ include("spikes.jl")
         end
 
         @testset "Sell signal on empty position opens a signed short" begin
-            engine = ExecutionEngine()
+            engine = ExecutionEngine(max_position_size = 1_000.0)
             sell = TradeSignal(
                 Dict(
                     "ticker"=>"MARKET-F",
@@ -534,7 +1025,7 @@ include("spikes.jl")
         end
 
         @testset "Neutral signal rejected with 'neutral signal' reason" begin
-            engine = ExecutionEngine()
+            engine = ExecutionEngine(max_position_size = 1_000.0)
             neutral = TradeSignal(
                 Dict(
                     "ticker"=>"MARKET-G",
@@ -551,7 +1042,7 @@ include("spikes.jl")
         end
 
         @testset "Buy then Sell — position goes to zero" begin
-            engine = ExecutionEngine()
+            engine = ExecutionEngine(max_position_size = 1_000.0)
             buy = TradeSignal(
                 Dict(
                     "ticker"=>"MARKET-H",
@@ -580,7 +1071,7 @@ include("spikes.jl")
         end
 
         @testset "Multiple Buy then Sell — correct netting" begin
-            engine = ExecutionEngine()
+            engine = ExecutionEngine(max_position_size = 1_000.0)
             buy_sig = TradeSignal(
                 Dict(
                     "ticker"=>"MARKET-I",
@@ -591,8 +1082,9 @@ include("spikes.jl")
                     "timestamp_ns"=>1_000,
                 ),
             )
-            execute_signal!(engine, buy_sig, 10_000.0)
-            execute_signal!(engine, buy_sig, 10_000.0)
+            first_buy = execute_signal!(engine, buy_sig, 10_000.0)
+            @test first_buy.executed
+            @test execute_signal!(engine, buy_sig, 10_000.0).executed
             pos_after_two_buys = engine.positions["MARKET-I"]
 
             sell_sig = TradeSignal(
@@ -606,19 +1098,115 @@ include("spikes.jl")
                 ),
             )
             execute_signal!(engine, sell_sig, 10_000.0)
-            # Default max_position_size=10; two capped buys then one sell → exactly 10.0
-            @test engine.positions["MARKET-I"] == 10.0
+            # Equal Kelly sizes: two buys then one sell nets to one buy's units.
+            @test engine.positions["MARKET-I"] ≈ first_buy.position_units
             @test engine.positions["MARKET-I"] < pos_after_two_buys
         end
     end
     @testset "Backtest" begin
+        # Kelly-sized units above `max_position_size` are rejected (not capped), so
+        # backtests that need fills set a cap above the Kelly size and derive expected
+        # values from the actual Kelly units instead of an implied 10-unit cap.
+        kelly_units(conf, price; balance = 10_000.0, payoff_ratio = 1.5) = size_position(
+            confidence = Float64(Float32(conf)),
+            price = price,
+            account_balance = balance,
+            payoff_ratio = payoff_ratio,
+        ).units
+        roomy = 1_000.0
+
+        @testset "an explicit 10-unit cap rejects Kelly sizes above it" begin
+            cfg = BacktestConfig(initial_balance = 10_000.0, max_position_size = 10.0)
+            @test kelly_units(0.92, 100.0) > cfg.max_position_size
+            signals = [TradeSignal("BTC-USD", Buy, 100.0, 1.0, 0.92f0, 1_000_000_000)]
+            result = run_backtest(cfg, signals)
+            @test result.events[end].event_type == "max_position_reject"
+            @test startswith(result.events[end].reason, "exceeds_max_position:")
+            @test result.final_balance == cfg.initial_balance
+            @test result.equity_curve == [10_000.0, 10_000.0]
+        end
+
+        @testset "default caps scale with balance and price (two-signal example)" begin
+            # The example from test/simulation.jl ("Existing backtester: same-tick
+            # execution ..."): 10_000 balance, buy @ 100 then sell @ 101, confidence 0.95.
+            signals = [
+                TradeSignal("MARKET-A", Buy, 100.0, 1.0, 0.95f0, 1_000),
+                TradeSignal("MARKET-A", Sell, 101.0, 1.0, 0.95f0, 2_000),
+            ]
+            units = kelly_units(0.95, 100.0)
+            @test 45.0 < units < 46.0
+
+            # Control: the fixed 10-unit default on b9c06fc (max_position_size = 10.0,
+            # no relative cap in force) rejects both signals, so an ordinary-size default
+            # backtest made zero trades and `only(...)` on the closed trades threw.
+            old_default = BacktestConfig(initial_balance = 10_000.0, max_position_size = 10.0)
+            control = run_backtest(old_default, signals; log_file = nothing)
+            @test isempty(control.trade_log)
+            @test [e.event_type for e in control.events] == ["max_position_reject", "max_position_reject"]
+            @test all(e -> startswith(e.reason, "exceeds_max_position:"), control.events)
+            @test_throws ArgumentError only(filter(t -> t.is_closed, control.trade_log))
+
+            # New default: the entry executes at its full Kelly size and closes.
+            result = run_backtest(
+                BacktestConfig(initial_balance = 10_000.0),
+                signals;
+                log_file = nothing,
+            )
+            closed = only(filter(t -> t.is_closed, result.trade_log))
+            @test closed.units == units
+            @test closed.pnl ≈ units * 1.0
+            @test [e.event_type for e in result.events] == ["executed", "executed"]
+
+            # The relative cap scales with balance: at 100x or 1/100x the balance the
+            # same signals still trade, with units proportional to the balance.
+            for bal in (100.0, 1_000_000.0)
+                r = run_backtest(BacktestConfig(initial_balance = bal), signals; log_file = nothing)
+                c = only(filter(t -> t.is_closed, r.trade_log))
+                @test c.units ≈ units * bal / 10_000.0
+            end
+
+            # A relative cap below the Kelly fraction (~0.458) rejects the entry with a
+            # reason naming the cap; the size is never shrunk to fit.
+            tight = BacktestConfig(initial_balance = 10_000.0, max_position_fraction = 0.25)
+            r_tight = run_backtest(tight, signals; log_file = nothing)
+            @test isempty(r_tight.trade_log)
+            @test r_tight.events[1].event_type == "max_position_reject"
+            @test startswith(r_tight.events[1].reason, "exceeds_max_position_fraction:")
+            @test all(e -> e.position_units == 0.0, r_tight.events)
+            @test r_tight.equity_curve == [10_000.0, 10_000.0, 10_000.0]
+
+            # No clamp: an oversize request yields zero fills and a rejection under
+            # either cap, never a capped size equal to the cap.
+            for cfg in (
+                BacktestConfig(initial_balance = 10_000.0, max_position_size = 45.0),
+                BacktestConfig(initial_balance = 10_000.0, max_position_fraction = 0.45),
+                BacktestConfig(
+                    initial_balance = 10_000.0,
+                    max_position_size = 45.0,
+                    max_position_fraction = 0.45,
+                ),
+            )
+                r = run_backtest(cfg, signals; log_file = nothing)
+                @test isempty(r.trade_log)
+                @test !any(e -> e.executed, r.events)
+                @test all(e -> e.event_type == "max_position_reject", r.events)
+                @test !any(e -> e.position_units in (45.0, 0.45 * 10_000.0 / 100.0), r.events)
+            end
+        end
         @testset "BacktestConfig constructor with defaults" begin
             cfg = BacktestConfig()
             @test cfg.initial_balance == 10_000.0
             @test cfg.confidence_threshold == Float32(0.85)
             @test cfg.payoff_ratio == 1.5
-            @test cfg.max_position_size == 10.0
+            @test cfg.max_position_size == Inf
+            @test cfg.max_position_fraction == DEFAULT_MAX_POSITION_FRACTION == 1.0
             @test cfg.slippage_pct == 0.0
+            # Eight-argument positional form (pre-`max_position_fraction`) keeps the
+            # caller's absolute cap and uses the default relative cap; caps are validated.
+            legacy = BacktestConfig(10_000.0, 0.85f0, 1.5, 10.0, 0.0, 0.0, 0.0, nothing)
+            @test legacy.max_position_size == 10.0
+            @test legacy.max_position_fraction == 1.0
+            @test_throws ArgumentError BacktestConfig(1.0, 0.85f0, 1.5, NaN, 0.0, 0.0, 0.0, nothing)
             @test cfg.commission_pct == 0.0
         end
 
@@ -640,7 +1228,7 @@ include("spikes.jl")
         end
 
         @testset "run_backtest with buy signals — equity curve changes" begin
-            cfg = BacktestConfig(initial_balance = 10_000.0)
+            cfg = BacktestConfig(initial_balance = 10_000.0, max_position_size = roomy)
             signals = [
                 TradeSignal(
                     Dict(
@@ -666,14 +1254,14 @@ include("spikes.jl")
             result = run_backtest(cfg, signals)
             @test length(result.equity_curve) == 3  # initial + 2 signals
             @test result.equity_curve[1] == 10_000.0
+            @test all(e -> e.event_type == "executed", result.events)
             # Buy-only: no trades recorded until a sell closes the position
             @test result.total_trades == 0
             @test result.final_balance == cfg.initial_balance
         end
 
         @testset "run_backtest with buy+sell — PnL computed" begin
-            # max_position_size default 10.0 caps Kelly units → deterministic PnL
-            cfg = BacktestConfig(initial_balance = 10_000.0)
+            cfg = BacktestConfig(initial_balance = 10_000.0, max_position_size = roomy)
             signals = [
                 TradeSignal(
                     Dict(
@@ -702,6 +1290,7 @@ include("spikes.jl")
             closed = filter(t -> t.pnl != 0.0, result.trade_log)
             @test length(closed) >= 1
             @test closed[1].pnl > 0.0  # bought at 100, sold at 110
+            @test closed[1].pnl ≈ 10.0 * kelly_units(0.92, 100.0) atol=1e-6
         end
 
         @testset "run_backtest with neutral signals — no trades" begin
@@ -727,6 +1316,7 @@ include("spikes.jl")
         @testset "run_backtest with slippage — execution price adjusted" begin
             cfg = BacktestConfig(
                 initial_balance = 10_000.0,
+                max_position_size = roomy,
                 slippage_pct = 0.5,  # 0.5% slippage
             )
             signals = [
@@ -758,7 +1348,7 @@ include("spikes.jl")
             @test result.total_trades == 1
             @test result.trade_log[1].price ≈ 109.45 atol=0.01
             # Final balance should differ from no-slippage case
-            cfg_noslip = BacktestConfig(initial_balance = 10_000.0)
+            cfg_noslip = BacktestConfig(initial_balance = 10_000.0, max_position_size = roomy)
             result_noslip = run_backtest(cfg_noslip, signals)
             @test result.final_balance < result_noslip.final_balance
         end
@@ -766,6 +1356,7 @@ include("spikes.jl")
         @testset "run_backtest with commission — balance reduced" begin
             cfg = BacktestConfig(
                 initial_balance = 10_000.0,
+                max_position_size = roomy,
                 commission_pct = 0.1,  # 0.1% commission
             )
             signals = [
@@ -783,10 +1374,13 @@ include("spikes.jl")
             result = run_backtest(cfg, signals)
             # Commission should reduce balance: units * price * 0.1%
             @test result.final_balance < cfg.initial_balance
+            @test result.final_balance ≈
+                  cfg.initial_balance - kelly_units(0.92, 100.0) * 100.0 * 0.001 atol=1e-6
         end
 
         @testset "equity curve marks open positions at every signal" begin
-            cfg = BacktestConfig(initial_balance = 10_000.0, max_position_size = 10.0)
+            cfg = BacktestConfig(initial_balance = 10_000.0, max_position_size = roomy)
+            u = kelly_units(0.92, 100.0)
             signals = [
                 TradeSignal(
                     Dict(
@@ -812,40 +1406,46 @@ include("spikes.jl")
 
             result = run_backtest(cfg, signals)
 
-            @test result.equity_curve == [10_000.0, 10_000.0, 10_100.0]
+            @test result.equity_curve[1:2] == [10_000.0, 10_000.0]
+            @test result.equity_curve[3] ≈ 10_000.0 + 10.0 * u atol=1e-6
             @test result.final_balance == last(result.equity_curve)
-            @test result.total_return == 1.0
+            @test result.total_return ≈ 10.0 * u / 10_000.0 * 100.0 atol=1e-6
         end
 
         @testset "entry slippage is reflected at the observed market price" begin
             cfg = BacktestConfig(
                 initial_balance = 10_000.0,
-                max_position_size = 10.0,
+                max_position_size = roomy,
                 slippage_pct = 1.0,
             )
             signals = [TradeSignal("BTC-USD", Buy, 100.0, 1.0, 0.92f0, 1_000_000_000)]
+            u = kelly_units(0.92, 100.0)
 
             result = run_backtest(cfg, signals)
 
-            @test result.equity_curve == [10_000.0, 9_990.0]
-            @test result.final_balance == 9_990.0
+            # Filled at 101 (1% slippage), marked at the observed 100: -1 per unit.
+            @test result.equity_curve[1] == 10_000.0
+            @test result.equity_curve[2] ≈ 10_000.0 - u atol=1e-6
+            @test result.final_balance ≈ 10_000.0 - u atol=1e-6
         end
 
         @testset "same-side observations update open-position marks" begin
-            cfg = BacktestConfig(initial_balance = 10_000.0, max_position_size = 10.0)
+            cfg = BacktestConfig(initial_balance = 10_000.0, max_position_size = roomy)
             signals = [
                 TradeSignal("BTC-USD", Buy, 100.0, 1.0, 0.92f0, 1_000_000_000),
                 TradeSignal("BTC-USD", Buy, 90.0, 1.0, 0.92f0, 2_000_000_000),
             ]
+            u = kelly_units(0.92, 100.0)
 
             result = run_backtest(cfg, signals)
 
-            @test result.equity_curve == [10_000.0, 10_000.0, 9_900.0]
-            @test result.max_drawdown == 1.0
+            @test result.equity_curve[1:2] == [10_000.0, 10_000.0]
+            @test result.equity_curve[3] ≈ 10_000.0 - 10.0 * u atol=1e-6
+            @test result.max_drawdown ≈ 10.0 * u / 10_000.0 * 100.0 atol=1e-6
         end
 
         @testset "replay event latency is deterministic" begin
-            cfg = BacktestConfig(initial_balance = 10_000.0)
+            cfg = BacktestConfig(initial_balance = 10_000.0, max_position_size = roomy)
             signals = [
                 TradeSignal("BTC-USD", Buy, 100.0, 1.0, 0.92f0, 1_000_000_000),
                 TradeSignal("BTC-USD", Sell, 101.0, 1.0, 0.90f0, 2_000_000_000),
@@ -854,6 +1454,7 @@ include("spikes.jl")
             first = run_backtest(cfg, signals)
             second = run_backtest(cfg, signals)
 
+            @test getfield.(first.events, :event_type) == ["executed", "executed"]
             @test getfield.(first.events, :latency_ns) == [0, 0]
             @test getfield.(first.events, :latency_ns) == getfield.(second.events, :latency_ns)
         end
@@ -891,8 +1492,12 @@ include("spikes.jl")
         end
 
         @testset "run_backtest with slippage and commission combined" begin
-            cfg =
-                BacktestConfig(initial_balance = 10_000.0, slippage_pct = 0.5, commission_pct = 0.1)
+            cfg = BacktestConfig(
+                initial_balance = 10_000.0,
+                max_position_size = roomy,
+                slippage_pct = 0.5,
+                commission_pct = 0.1,
+            )
             signals = [
                 TradeSignal(
                     Dict(
@@ -1008,7 +1613,11 @@ include("spikes.jl")
         end
 
         @testset "short open sell slippage fills below mid" begin
-            cfg = BacktestConfig(initial_balance = 10_000.0, slippage_pct = 1.0)
+            cfg = BacktestConfig(
+                initial_balance = 10_000.0,
+                max_position_size = roomy,
+                slippage_pct = 1.0,
+            )
             signals = [
                 TradeSignal(
                     Dict(
@@ -1264,7 +1873,7 @@ end
         execute_signal!(default_engine, sig, 10_000.0)
         @test !isfile(path)
 
-        engine = ExecutionEngine(log_file = path)
+        engine = ExecutionEngine(log_file = path, max_position_size = 1_000.0)
         execute_signal!(engine, sig, 10_000.0)
 
         # Rejected signal should also be persisted
@@ -1307,6 +1916,18 @@ end
             @test orig.position_units ≈ ld.position_units
             @test orig.applied_fraction ≈ ld.applied_fraction
         end
+
+        # A max-position rejection is persisted with its explicit reason.
+        capped_path = joinpath(dir, "capped.jsonl")
+        capped = ExecutionEngine(log_file = capped_path, max_position_size = 10.0)
+        capped_dec = execute_signal!(capped, sig, 10_000.0)
+        close_log!(capped)
+        capped_loaded = load_history(capped_path)
+        @test length(capped_loaded) == 1
+        @test capped_loaded[1].event_type == "max_position_reject"
+        @test !capped_loaded[1].executed
+        @test capped_loaded[1].reason == capped_dec.reason
+        @test startswith(capped_loaded[1].reason, "exceeds_max_position:")
 
         # Truncate clears an existing log
         engine2 = ExecutionEngine(log_file = path, truncate = true)
@@ -1351,7 +1972,8 @@ end
         write(defaults_path, "log_file: null\n")
         defaults = load_config(defaults_path)
         @test defaults.confidence_threshold == 0.85f0
-        @test defaults.max_position_size == 10.0
+        @test defaults.max_position_size == Inf
+        @test defaults.max_position_fraction == 1.0
         @test defaults.payoff_ratio == 1.5
         @test defaults.log_file === nothing
 
@@ -1416,7 +2038,9 @@ end
 @testset "Backtest log_file" begin
     mktempdir() do dir
         path = joinpath(dir, "backtest.jsonl")
-        cfg = BacktestConfig(initial_balance = 10_000.0, log_file = path)
+        # Cap above the Kelly size so both signals fill (sizes above the cap are rejected).
+        cfg =
+            BacktestConfig(initial_balance = 10_000.0, max_position_size = 1_000.0, log_file = path)
         signals = [
             TradeSignal(
                 Dict(

@@ -36,7 +36,9 @@ using ..DendriteTrader:
     execute_signal!,
     SignalEvent,
     events,
-    close_log!
+    close_log!,
+    DEFAULT_MAX_POSITION_FRACTION,
+    _validate_position_caps
 
 export BacktestConfig, BacktestResult
 export run_backtest, print_summary
@@ -52,7 +54,19 @@ Configuration for backtest runs.
 - `initial_balance`: starting account balance (default 10,000)
 - `confidence_threshold`: minimum signal confidence to execute (default 0.85)
 - `payoff_ratio`: odds-style average win/loss ratio for Kelly sizing (default 1.5)
-- `max_position_size`: hard cap on position units (default 10.0)
+- `max_position_size`: optional absolute cap on order units (default `Inf`, no absolute
+  cap). Kelly-sized entries above it are rejected (`max_position_reject`, reason prefix
+  `exceeds_max_position:`), not shrunk to the cap. `NaN` or `<= 0` throws.
+- `max_position_fraction`: relative cap on the projected per-ticker position notional
+  over the `account_balance` passed to `execute_signal!` (default
+  `DEFAULT_MAX_POSITION_FRACTION = 1.0`). `run_backtest` passes its cash balance, which does not fall when a position opens (only commissions and realized PnL change it). An entry with
+  `abs(position) * price > max_position_fraction * account_balance` is rejected
+  (`max_position_reject`, reason prefix `exceeds_max_position_fraction:`). Closes only
+  reduce the position and are exempt. A single Kelly-sized entry commits at most `0.5`
+  of `account_balance`, so the default never binds on it (`run_backtest` ignores
+  same-side re-entry). The cap is per ticker and `account_balance` does not fall when a
+  position opens, so it does not bound total notional across tickers. Must be finite and
+  positive. Both caps apply when both are set.
 - `slippage_pct`: slippage percentage per trade (default 0.0)
 - `commission_pct`: commission percentage per trade (default 0.0)
 - `risk_free_rate`: annualized risk-free rate for Sharpe/Sortino (default 0.0)
@@ -67,13 +81,65 @@ struct BacktestConfig
     commission_pct::Float64
     risk_free_rate::Float64
     log_file::Union{String, Nothing}
+    max_position_fraction::Float64
+
+    function BacktestConfig(
+        initial_balance::Float64,
+        confidence_threshold::Float32,
+        payoff_ratio::Float64,
+        max_position_size::Float64,
+        slippage_pct::Float64,
+        commission_pct::Float64,
+        risk_free_rate::Float64,
+        log_file::Union{String, Nothing},
+        max_position_fraction::Float64,
+    )
+        _validate_position_caps(max_position_size, max_position_fraction)
+        new(
+            initial_balance,
+            confidence_threshold,
+            payoff_ratio,
+            max_position_size,
+            slippage_pct,
+            commission_pct,
+            risk_free_rate,
+            log_file,
+            max_position_fraction,
+        )
+    end
+end
+
+# Eight-argument positional form from before `max_position_fraction` existed. It keeps
+# the caller's absolute cap and uses the default relative cap.
+function BacktestConfig(
+    initial_balance::Real,
+    confidence_threshold::Real,
+    payoff_ratio::Real,
+    max_position_size::Real,
+    slippage_pct::Real,
+    commission_pct::Real,
+    risk_free_rate::Real,
+    log_file::Union{String, Nothing},
+)
+    BacktestConfig(
+        Float64(initial_balance),
+        Float32(confidence_threshold),
+        Float64(payoff_ratio),
+        Float64(max_position_size),
+        Float64(slippage_pct),
+        Float64(commission_pct),
+        Float64(risk_free_rate),
+        log_file,
+        DEFAULT_MAX_POSITION_FRACTION,
+    )
 end
 
 function BacktestConfig(;
     initial_balance = 10_000.0,
     confidence_threshold = 0.85f0,
     payoff_ratio = 1.5,
-    max_position_size = 10.0,
+    max_position_size = Inf,
+    max_position_fraction = DEFAULT_MAX_POSITION_FRACTION,
     slippage_pct = 0.0,
     commission_pct = 0.0,
     risk_free_rate = 0.0,
@@ -88,6 +154,7 @@ function BacktestConfig(;
         Float64(commission_pct),
         Float64(risk_free_rate),
         log_file,
+        Float64(max_position_fraction),
     )
 end
 
@@ -273,6 +340,7 @@ function run_backtest(
     engine = ExecutionEngine(
         confidence_threshold = config.confidence_threshold,
         max_position_size = config.max_position_size,
+        max_position_fraction = config.max_position_fraction,
         payoff_ratio = config.payoff_ratio,
         log_file = log_file,
     )

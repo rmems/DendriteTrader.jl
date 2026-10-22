@@ -85,7 +85,7 @@ using DendriteTrader
 
 engine = ExecutionEngine(
     confidence_threshold = Float32(0.85),
-    max_position_size    = 10.0,
+    max_position_fraction = 1.0,   # default: per-ticker position notional ≤ 1.0 × account_balance
     payoff_ratio         = 1.5,
     log_file             = "events.jsonl",
 )
@@ -122,7 +122,10 @@ engine = load_config("engine.toml")
 ```
 
 The complete schema is `confidence_threshold` (finite number from `0` to `1`),
-`max_position_size` (positive finite number), `max_portfolio_exposure` (positive
+`max_position_size` (positive finite number; optional absolute unit cap, omit for none),
+`max_position_fraction` (positive finite number; relative cap on projected per-ticker
+position notional over the `account_balance` passed to `execute_signal!`, existing units
+included, default `1.0`; `run_backtest` passes its cash balance, which does not fall when a position opens (only commissions and realized PnL change it)), `max_portfolio_exposure` (positive
 number: cap on total gross notional exposure across all tickers, valued at each
 ticker's last execution price), `payoff_ratio` (positive finite number),
 `log_file` (string, or YAML `null`), and `truncate` (boolean). A
@@ -141,6 +144,10 @@ signal = TradeSignal(Dict(
 ))
 
 decision = execute_signal!(engine, signal, 10_000.0)
+# Kelly sizes ~43 units (k ≈ 0.433 of the balance), within the default relative cap
+# max_position_fraction = 1.0, so it executes at its full size. Orders above a cap
+# are rejected ("exceeds_max_position: ..." for the absolute unit cap,
+# "exceeds_max_position_fraction: ..." for the relative cap); never silently capped.
 println(decision)
 ```
 
@@ -212,13 +219,13 @@ println(position.risk)
 
 | Type / Function | Description |
 |-----------------|-------------|
-| `kelly_fraction(; win_rate, avg_win, avg_loss)` | Conservative half-Kelly fraction from historical trade statistics, clamped to `[0.0, 0.20]` |
-| `half_kelly(p, b)` | Half-Kelly fraction for win probability `p` and payoff ratio `b` |
+| `kelly_fraction(; win_rate, avg_win, avg_loss)` | Conservative half-Kelly fraction from historical trade statistics; output capped to `[0.0, 0.20]`. Invalid inputs (`win_rate` outside `[0, 1]`, non-positive `avg_win`/`avg_loss`, non-finite values) throw `ArgumentError` |
+| `half_kelly(p, b)` | Half-Kelly fraction for win probability `p` in `[0, 1]` and payoff ratio `b > 0`; invalid inputs throw `ArgumentError` |
 | `from_confidence(; confidence, payoff_ratio)` | Maps neural confidence directly to a half-Kelly fraction |
 | `RiskTier` | Qualitative risk enum: `Aggressive`, `Moderate`, `Conservative`, `Minimal` |
 | `risk_tier(confidence)` | Classifies confidence into a `RiskTier` |
 | `PositionSize` | Result struct with units, Kelly fraction, confidence, risk tier, and account risk percentage |
-| `size_position(; confidence, price, account_balance, payoff_ratio, kelly_scalar)` | Computes full position sizing from neural confidence |
+| `size_position(; confidence, price, account_balance, payoff_ratio, kelly_scalar)` | Computes full position sizing from neural confidence; invalid inputs (e.g. `price <= 0`, `account_balance <= 0`, confidence outside `[0, 1]`) throw `ArgumentError` |
 
 ## Rate Limiter
 
@@ -350,7 +357,7 @@ export_trade_log_json(result, "output/trades.json")
 
 | Type / Function | Description |
 |-----------------|-------------|
-| `BacktestConfig(; initial_balance, confidence_threshold, payoff_ratio, max_position_size, risk_free_rate, slippage_pct, commission_pct, log_file)` | Configuration for a backtest run. Defaults: balance `$10,000`, threshold `0.85`, payoff `1.5`, max units `10.0`, risk-free rate `0.0`, slippage `0.0%`, commission `0.0%`. Optional `log_file` persists `SignalEvent`s. |
+| `BacktestConfig(; initial_balance, confidence_threshold, payoff_ratio, max_position_size, max_position_fraction, risk_free_rate, slippage_pct, commission_pct, log_file)` | Configuration for a backtest run. Defaults: balance `$10,000`, threshold `0.85`, payoff `1.5`, no absolute unit cap (`max_position_size = Inf`), relative cap `max_position_fraction = 1.0`, risk-free rate `0.0`, slippage `0.0%`, commission `0.0%`. Optional `log_file` persists `SignalEvent`s. |
 | `run_backtest(config, signals; log_file=config.log_file)` | Replay `Vector{TradeSignal}` through the engine. Returns a `BacktestResult`. |
 | `BacktestResult` | Result struct with `config`, `initial_balance`, `final_balance`, `equity_curve`, `trade_log`, `events`, `total_return`, `max_drawdown`, `win_rate`, `total_trades`. |
 | `print_summary(result)` | Print a formatted summary table to stdout. |
