@@ -26,7 +26,8 @@ eight-argument form is kept); `DEFAULT_MAX_POSITION_FRACTION` is a new export; a
   `ExecutionEngine`, `BacktestConfig` and `load_config` (default
   `DEFAULT_MAX_POSITION_FRACTION = 1.0`): an order is rejected when the projected
   position in the ticker, `abs(current_units ± units) * price`, exceeds
-  `max_position_fraction * account_balance`. Orders that only reduce the existing
+  `max_position_fraction * account_balance` (the `account_balance` passed to
+  `execute_signal!`; `run_backtest` passes its cash balance, which does not fall when a position opens (only commissions and realized PnL change it)). Orders that only reduce the existing
   position in the ticker are exempt; a flip past flat is checked. The cap is per ticker
   and does not bound total notional across tickers (`max_portfolio_exposure` does). `max_position_size` becomes an
   optional absolute unit cap with default `Inf` (was `10.0`); when both are set, both

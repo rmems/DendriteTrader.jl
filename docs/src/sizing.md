@@ -47,6 +47,8 @@ with a `max_position_reject` event whose reason names the cap.
 | `max_position_fraction` | `abs(current_units ± units) * price <= max_position_fraction * account_balance` (projected position in the ticker) | `1.0` | `exceeds_max_position_fraction:` |
 | `max_position_size` | `units <= max_position_size` | `Inf` (no absolute cap) | `exceeds_max_position:` |
 
+The denominator is the `account_balance` passed to `execute_signal!`. `run_backtest` passes its cash balance, which does not fall when a position opens (only commissions and realized PnL change it).
+
 The default relative cap of `1.0` is a backstop: it is twice the largest single
 Kelly-sized commitment, so it never rejects one Kelly-sized entry from flat and
 boundary rounding cannot flip that decision. It does bind when same-side entries

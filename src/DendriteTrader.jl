@@ -575,7 +575,8 @@ Stateful execution engine with confidence gating and position management.
                           cap are rejected (`max_position_reject`, reason prefix
                           `exceeds_max_position:`), not shrunk to the cap.
 - `max_position_fraction`: relative cap on the projected per-ticker position as a
-                          fraction of the account balance (default `1.0`). An
+                          fraction of the `account_balance` passed to
+                          `execute_signal!` (default `1.0`). An
                           order is rejected when
                           `abs(current_units ± units) * price >
                           max_position_fraction * account_balance`
@@ -676,8 +677,8 @@ end
 
 Default relative position cap for [`ExecutionEngine`](@ref) and `BacktestConfig`: the
 projected position in one ticker after an order, valued at the order price
-(`abs(current_units ± units) * price`), may not exceed this fraction of the account
-balance. The cap is per ticker. It does not bound the sum across tickers (use
+(`abs(current_units ± units) * price`), may not exceed this fraction of the
+`account_balance` passed to `execute_signal!`. `run_backtest` passes its cash balance, which does not fall when a position opens (only commissions and realized PnL change it). The cap is per ticker. It does not bound the sum across tickers (use
 `max_portfolio_exposure` for that), so it is not a portfolio-wide leverage limit.
 
 Why `1.0`: `execute_signal!` sizes with [`size_position`](@ref) at its default

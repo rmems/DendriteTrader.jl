@@ -36,7 +36,7 @@ using DendriteTrader
 
 engine = ExecutionEngine(
     confidence_threshold = Float32(0.85),
-    max_position_fraction = 1.0,   # default: per-ticker position notional ≤ 1.0 × balance
+    max_position_fraction = 1.0,   # default: per-ticker position notional ≤ 1.0 × account_balance
     payoff_ratio         = 1.5,
 )
 
