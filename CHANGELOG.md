@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **Re-verify `CLAUDE.md` at HEAD** (RM-2194): refresh verified Julia test/format commands for
+  commit `cc14dd5`, including expected `@test_broken` counts and current fast-test timing.
+
 ### Performance
 
 - **Paper simulation replays with incremental indexes instead of per-event rescans**

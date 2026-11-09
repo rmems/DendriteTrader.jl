@@ -71,15 +71,15 @@ patterns; fix them only in a scoped change with tests.
 
 ## Verified commands
 
-Run from the repository root. Verified on a fresh shallow clone at commit `9d1cb2e`
-(Julia 1.13.2, Linux, CPU only).
+Run from the repository root. Verified on a shallow clone at commit `cc14dd5`
+(Julia 1.10.10, Linux, CPU only). CI uses Julia 1.13 per `ci.yml`.
 
-| Purpose | Command | Status at `9d1cb2e` |
+| Purpose | Command | Status at `cc14dd5` |
 |---------|---------|---------------------|
-| Full test suite | `julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'` | Passes: 571 pass, 0 fail, 0 error, 0 broken (~250 s cold, mostly precompilation) |
-| Fast test loop | `julia --startup-file=no --project=. test/runtests.jl` | Passes (~28 s warm) |
+| Full test suite | `julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'` | Passes: `Testing DendriteTrader tests passed`; top-level `DendriteTrader` testset 531 pass, 0 fail, 0 error; 3 expected `@test_broken` in walk-forward embargo and paper-oracle property testsets (~200 s cold, mostly precompilation) |
+| Fast test loop | `julia --startup-file=no --project=. test/runtests.jl` | Passes (~2 m warm after deps are instantiated) |
 | Docs build | `julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'` then `julia --project=docs docs/make.jl` | Builds. The first command rewrites `docs/Project.toml` with a local path source; do not commit that |
-| Format (non-mutating) | `julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.add(name="JuliaFormatter", version="2"); using JuliaFormatter; exit(format("."; overwrite=false) ? 0 : 1)'` | Passes (exit 0) after #107, which reformatted `src/features/Labels.jl`, `src/market/Replay.jl`, `test/leakage.jl`; at `9d1cb2e` it failed on those three. Same check the CI `JuliaFormatter` job runs |
+| Format (non-mutating) | `julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.add(name="JuliaFormatter", version="2"); using JuliaFormatter; exit(format("."; overwrite=false) ? 0 : 1)'` | Passes (exit 0). Same check the CI `JuliaFormatter` job runs |
 
 Notes:
 
