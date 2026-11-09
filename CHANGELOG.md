@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- `CLAUDE.md`: add agent gotchas (registry publish, `.claude/` not gitignored, Julia CI vs compat,
+  `JuliaFormatter` extras-only), refresh verified commands at `cc14dd5` (RM-2194).
+
 ### Performance
 
 - **Paper simulation replays with incremental indexes instead of per-event rescans**
