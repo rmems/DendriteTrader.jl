@@ -124,3 +124,14 @@ Notes:
   not pass them straight into Kelly sizing.
 - Keep the SPDX header on every new source file and update `CHANGELOG.md`.
 - Read `REVIEW.md` before touching shared mutable state.
+
+## Gotchas
+
+- Never run `Pkg.register` or any other registry or publish command.
+- `.claude/` is not gitignored (`.codex/`, `.cursor/`, `.kilo/`, `.mimo/`, `.mimocode/`,
+  `.beads/` are); do not commit local agent state there.
+- CI runs Julia 1.13 while `[compat]` allows 1.10.
+- `Project.toml` lists `JuliaFormatter` under `[extras]` but not `[targets]`, so it is
+  not a test dependency. CI installs it in a temporary environment instead.
+- The SPDX header rule covers every new `.jl` file under `src/` and `test/`, plus
+  `docs/make.jl`, not only `src/`.
