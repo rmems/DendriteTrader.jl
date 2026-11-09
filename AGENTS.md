@@ -21,6 +21,7 @@ docstring in `src/DendriteTrader.jl`.
 | `src/sizing/`, `src/backtest/`, `src/experiments/` | Kelly sizing, backtesting, experiment helpers |
 | `test/runtests.jl` (+ topic files, `test/fixtures/`) | Unit tests |
 | `test/integration/test_dydx.jl` | Live dYdX integration test (network) |
+| `benchmark/simulation.jl` | Paper-simulation replay throughput vs resting-order count |
 | `docs/` | Documenter.jl site (`docs/make.jl`) |
 
 ## Toolchain
@@ -40,6 +41,9 @@ julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.add(name="JuliaFormatter", ver
 
 # Apply formatting in place (same pinned formatter)
 julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.add(name="JuliaFormatter", version="2"); using JuliaFormatter; format(".")'
+
+# Paper-simulation replay throughput (not run in CI). Quote one row per process.
+julia --startup-file=no --project=. benchmark/simulation.jl 4096 7 prints 1024
 
 # Docs (docs.yml)
 julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'
