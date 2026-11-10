@@ -64,3 +64,15 @@ DYDX_INTEGRATION=true julia --project=. -e 'include("test/integration/test_dydx.
   (`RM-366: ...`) with the PR number.
 - Per the README this is experimental software, not a production HFT runtime, profit claim or
   financial advice. Keep docs consistent with that.
+
+## PR metadata hygiene — set at creation, not as a retrofit
+
+Every pull request opened in this repo must carry, in the same pass it is created:
+
+- **Assignee:** `rmems`.
+- **Linear issue ID** in the PR title as a trailing `(RM-xxxx)` or `(LIM-xxxx)`, in the branch name, and in commit subjects — so the GitHub↔Linear integration attaches the PR to its issue natively.
+- **Labels** from this repo's existing label vocabulary — mirror the labels on the issue the PR implements. Never invent labels.
+- **Milestone:** the repo's milestone for the work, when this repo uses milestones and one applies.
+- **Issue link:** the PR body references the issue it implements; when an issue is closed, its implementing PR is cited by full URL in the close comment and mirrored on the Linear twin.
+
+Verify with a read after creating the PR. A PR missing any applicable item is not done.
