@@ -21,6 +21,7 @@ docstring in `src/DendriteTrader.jl`.
 | `src/sizing/`, `src/backtest/`, `src/experiments/` | Kelly sizing, backtesting, experiment helpers |
 | `test/runtests.jl` (+ topic files, `test/fixtures/`) | Unit tests |
 | `test/integration/test_dydx.jl` | Live dYdX integration test (network) |
+| `benchmark/simulation.jl` | Paper-simulation replay throughput vs resting-order count |
 | `docs/` | Documenter.jl site (`docs/make.jl`) |
 
 ## Toolchain
@@ -34,8 +35,15 @@ docstring in `src/DendriteTrader.jl`.
 # Tests (CI: julia-actions/julia-buildpkg + julia-runtest)
 julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
 
-# Format check (ci.yml "JuliaFormatter" job). Pkg.add modifies Project.toml/Manifest; don't commit that.
-julia --project=. -e 'using Pkg; Pkg.add("JuliaFormatter"); using JuliaFormatter; format(".", check=true)'
+# Format check (ci.yml "JuliaFormatter" job). Non-mutating; uses a temp env, so Project.toml is untouched.
+# Exits 1 if any file needs formatting. (JuliaFormatter 2.x ignores `check=true`; don't use it.)
+julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.add(name="JuliaFormatter", version="2"); using JuliaFormatter; exit(format("."; overwrite=false) ? 0 : 1)'
+
+# Apply formatting in place (same pinned formatter)
+julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.add(name="JuliaFormatter", version="2"); using JuliaFormatter; format(".")'
+
+# Paper-simulation replay throughput (not run in CI). Quote one row per process.
+julia --startup-file=no --project=. benchmark/simulation.jl 4096 7 prints 1024
 
 # Docs (docs.yml)
 julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'
@@ -56,3 +64,15 @@ DYDX_INTEGRATION=true julia --project=. -e 'include("test/integration/test_dydx.
   (`RM-366: ...`) with the PR number.
 - Per the README this is experimental software, not a production HFT runtime, profit claim or
   financial advice. Keep docs consistent with that.
+
+## PR metadata hygiene — set at creation, not as a retrofit
+
+Every pull request opened in this repo must carry, in the same pass it is created:
+
+- **Assignee:** `rmems`.
+- **Linear issue ID** in the PR title as a trailing `(RM-xxxx)` or `(LIM-xxxx)`, in the branch name, and in commit subjects — so the GitHub↔Linear integration attaches the PR to its issue natively.
+- **Labels** from this repo's existing label vocabulary — mirror the labels on the issue the PR implements. Never invent labels.
+- **Milestone:** the repo's milestone for the work, when this repo uses milestones and one applies.
+- **Issue link:** the PR body references the issue it implements; when an issue is closed, its implementing PR is cited by full URL in the close comment and mirrored on the Linear twin.
+
+Verify with a read after creating the PR. A PR missing any applicable item is not done.

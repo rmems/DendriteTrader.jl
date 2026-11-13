@@ -1,0 +1,47 @@
+{
+  "schema": "metabolic-ledger.parity.v1",
+  "source_repo": "https://github.com/rmems/metabolic-ledger",
+  "source_commit": "37f626f64ac0a03f1d8da324f83eeab367993c9d",
+  "source_pr": "rmems/metabolic-ledger#28 (RM-1863)",
+  "contract": "docs/accounting-contract.md",
+  "vendored_for": "RM-1864",
+  "note": "Copied byte-for-byte; do not edit. Re-vendor from metabolic-ledger and update hashes instead.",
+  "files": {
+    "buy.json": {
+      "sha256": "831f54f173a3f5d6f6752a361373568bb186f91ff30b722f325a80b77bc77ec6",
+      "source_path": "fixtures/v1/buy.json"
+    },
+    "cancel_and_nonfill.json": {
+      "sha256": "d34290b4b2ed374973fb3760cc6a708fe8bd7acf87c9aa506dbd301036cf48bc",
+      "source_path": "fixtures/v1/cancel_and_nonfill.json"
+    },
+    "duplicate_fill.json": {
+      "sha256": "5f2b21c09cbddcb3d33430270c4f9146b12ab25db8a04364c68f596d36f24331",
+      "source_path": "fixtures/v1/duplicate_fill.json"
+    },
+    "full_close.json": {
+      "sha256": "e9c80525310a6f200d33c93e667070b6a0384754d9b91da03a45984934952b2e",
+      "source_path": "fixtures/v1/full_close.json"
+    },
+    "instrument_mismatch.json": {
+      "sha256": "20435d0c63f21d409cee50408784176d71f09423534b76a128eb22471e8ba205",
+      "source_path": "fixtures/v1/instrument_mismatch.json"
+    },
+    "partial_close.json": {
+      "sha256": "e2aef764ff60920d20e035b8b76db669c04691cdbd63488592ec8e4f0f52fd22",
+      "source_path": "fixtures/v1/partial_close.json"
+    },
+    "rebate.json": {
+      "sha256": "fd2e74423ea71d2242cc1c3933d55f2665baac9427336fa208d4d5defbc22635",
+      "source_path": "fixtures/v1/rebate.json"
+    },
+    "reject.json": {
+      "sha256": "66a6d20eb1796add58a23695aa67f2e4c8d8583e2cd9069e03665d4fe9a879ce",
+      "source_path": "fixtures/v1/reject.json"
+    },
+    "short_rejected.json": {
+      "sha256": "1fd0525323137f83b14a1ef810adc0a89ce7d20a34e82dbec8deccc4a7870a33",
+      "source_path": "fixtures/v1/short_rejected.json"
+    }
+  }
+}
