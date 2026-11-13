@@ -71,15 +71,15 @@ patterns; fix them only in a scoped change with tests.
 
 ## Verified commands
 
-Run from the repository root. Verified on a fresh shallow clone at commit `9d1cb2e`
-(Julia 1.13.2, Linux, CPU only).
+Run from the repository root. Verified on a clone at commit `cc14dd5` (Julia 1.13.3,
+Linux, CPU only).
 
-| Purpose | Command | Status at `9d1cb2e` |
+| Purpose | Command | Status at `cc14dd5` |
 |---------|---------|---------------------|
-| Full test suite | `julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'` | Passes: 571 pass, 0 fail, 0 error, 0 broken (~250 s cold, mostly precompilation) |
-| Fast test loop | `julia --startup-file=no --project=. test/runtests.jl` | Passes (~28 s warm) |
+| Full test suite | `julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'` | Passes: root testset 531/531, 0 fail, 0 error; 3 `@test_broken` in nested sets (~78 s warm after instantiate) |
+| Fast test loop | `julia --startup-file=no --project=. test/runtests.jl` | Passes (~73 s warm) |
 | Docs build | `julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'` then `julia --project=docs docs/make.jl` | Builds. The first command rewrites `docs/Project.toml` with a local path source; do not commit that |
-| Format (non-mutating) | `julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.add(name="JuliaFormatter", version="2"); using JuliaFormatter; exit(format("."; overwrite=false) ? 0 : 1)'` | Passes (exit 0) after #107, which reformatted `src/features/Labels.jl`, `src/market/Replay.jl`, `test/leakage.jl`; at `9d1cb2e` it failed on those three. Same check the CI `JuliaFormatter` job runs |
+| Format (non-mutating) | `julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.add(name="JuliaFormatter", version="2"); using JuliaFormatter; exit(format("."; overwrite=false) ? 0 : 1)'` | Passes (exit 0). Same check the CI `JuliaFormatter` job runs |
 
 Notes:
 
@@ -115,6 +115,16 @@ Notes:
 | `docs/src/` | Documenter pages; `experiments.md` is the research spec and scientific requirements |
 | `docs/superpowers/plans/2026-09-20-snn-hft-experiments.md` | Implementation plan. Tasks 1-5 done (Task 5 is the paper simulator in `src/simulation/`); Tasks 6-7 (artifacts/manifest, shadow feed) not started |
 
+## Gotchas
+
+- Never run `Pkg.register` or any other registry or publish command.
+- `.claude/` is **not** gitignored (`.codex/`, `.cursor/`, `.kilo/`, `.mimo/`, `.mimocode/`, and
+  `.beads/` are). Do not commit local agent state under `.claude/`.
+- CI runs Julia **1.13** (`ci.yml`, `docs.yml`, `integration.yml`); `[compat] julia = "1.10"`.
+- `Project.toml` lists `JuliaFormatter` under `[extras]` but not `[targets]`, so it is not a test
+  dependency. Use the temp-env format check above, not `Pkg.test()` deps.
+- SPDX headers are required on every new source file, including `test/` and `docs/make.jl`.
+
 ## Working rules for Claude
 
 - Add or extend a test in the matching `test/*.jl` file for every behavior change. For
@@ -122,7 +132,8 @@ Notes:
   look-ahead test to `test/leakage.jl` or the relevant file.
 - `Forecast.probabilities` are class probabilities, not calibrated win probabilities. Do
   not pass them straight into Kelly sizing.
-- Keep the SPDX header on every new source file and update `CHANGELOG.md`.
+- Keep the SPDX header on every new source file (including under `test/` and `docs/make.jl`) and
+  update `CHANGELOG.md`.
 - Read `REVIEW.md` before touching shared mutable state.
 
 ## Gotchas
