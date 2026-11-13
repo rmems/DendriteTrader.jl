@@ -2,24 +2,12 @@
 
 using Test
 
-# Former-owner host fragments are built at runtime so this file does not contain them.
-const _FORMER_OWNER = "Limen" * "-Neural"
-const _FORMER_PAGES = "limen" * "-neural.github.io"
-
-const _OWNERSHIP_ROOTS = [
-    "README.md",
-    "CHANGELOG.md",
-    "AGENTS.md",
-    "REVIEW.md",
-    "Project.toml",
-    "LICENSE",
-    "LICENSE-MIT",
-    "LICENSE-APACHE-2.0",
-    "src",
-    "docs",
-    "test",
-    ".github",
-]
+# Former-owner URL fragments are built at runtime so this file does not contain them.
+const _FORMER_OWNER = lowercase("Limen" * "-Neural")
+const _FORMER_GITHUB_URL =
+    Regex(raw"(?:^|[^A-Za-z0-9.-])github\.com[:/]" * _FORMER_OWNER * raw"(?:[/:?#]|$)", "i")
+const _FORMER_PAGES_URL =
+    Regex(raw"(?:^|[^A-Za-z0-9.-])" * _FORMER_OWNER * raw"\.github\.io(?:[/:?#]|$)", "i")
 
 const _SKIP_EXTENSIONS = Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".svg"])
 
@@ -30,19 +18,25 @@ function _ownership_text(path::AbstractString)
     return isvalid(String, bytes) ? String(bytes) : nothing
 end
 
+function _ownership_excluded(path::AbstractString, root::AbstractString)
+    relative = replace(relpath(path, root), "\\" => "/")
+    relative == "Manifest.toml" && return true
+    relative == ".git" && return true
+    for prefix in ("docs/build", "docs/deploydocs")
+        relative == prefix && return true
+        startswith(relative, prefix * "/") && return true
+    end
+    return false
+end
+
 function _ownership_files(root::AbstractString)
     files = String[]
-    for relative in _OWNERSHIP_ROOTS
-        path = joinpath(root, relative)
-        ispath(path) || continue
-        if isfile(path)
+    for (dir, dirs, names) in walkdir(root)
+        filter!(dirname -> !_ownership_excluded(joinpath(dir, dirname), root), dirs)
+        for name in names
+            path = joinpath(dir, name)
+            _ownership_excluded(path, root) && continue
             push!(files, path)
-            continue
-        end
-        for (dir, _, names) in walkdir(path)
-            for name in names
-                push!(files, joinpath(dir, name))
-            end
         end
     end
     return files
@@ -54,8 +48,11 @@ end
     for path in _ownership_files(root)
         text = _ownership_text(path)
         text === nothing && continue
-        if occursin(_FORMER_OWNER, text) || occursin(_FORMER_PAGES, text)
-            push!(hits, relpath(path, root))
+        relative = relpath(path, root)
+        for (line_number, line) in enumerate(eachline(IOBuffer(text)))
+            if occursin(_FORMER_GITHUB_URL, line) || occursin(_FORMER_PAGES_URL, line)
+                push!(hits, "$relative:$line_number")
+            end
         end
     end
     @test isempty(hits)
@@ -63,7 +60,9 @@ end
     index = read(joinpath(root, "docs", "src", "index.md"), String)
     @test occursin("https://github.com/rmems/DendriteTrader.jl/actions/workflows/ci.yml", index)
     @test occursin("https://rmems.github.io/DendriteTrader.jl", index)
-    @test occursin("] add https://github.com/rmems/DendriteTrader.jl", index)
+    install_commands =
+        [strip(line) for line in split(index, '\n') if startswith(strip(line), "] add ")]
+    @test install_commands == ["] add https://github.com/rmems/DendriteTrader.jl"]
     @test occursin("https://github.com/rmems/DendriteTrader.jl/blob/main/LICENSE", index)
 
     readme = read(joinpath(root, "README.md"), String)
