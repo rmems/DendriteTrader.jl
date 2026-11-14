@@ -116,6 +116,7 @@ eight-argument form is kept); `DEFAULT_MAX_POSITION_FRACTION` is a new export; a
 
 ### Changed
 
+- Docs home badges, install URL, and license link use `rmems/DendriteTrader.jl`. The `0.1.0` release link uses that repository as well.
 - **CI format gate**: the `JuliaFormatter` CI job now actually fails on unformatted code. It previously ran `format(".", check=true)`, which JuliaFormatter 2.x ignores (it reformatted in place and exited 0). The job now installs JuliaFormatter `2.x` into a temporary environment and exits 1 when `format("."; overwrite=false)` returns `false`. `AGENTS.md` documents the same command. `src/features/Labels.jl`, `src/market/Replay.jl` and `test/leakage.jl` were reformatted (layout only, parsed ASTs unchanged).
 - License: switched from GPL-3.0-only to dual MIT OR Apache-2.0.
   - Added `LICENSE-MIT` and `LICENSE-APACHE-2.0`.
@@ -136,4 +137,4 @@ See issues #10 and #11.
 - **dYdX v4 REST client**: REST API client for dYdX v4 decentralized exchange integration.
 - **Paper position tracking**: Simulated position tracking for paper trading without live execution.
 
-[0.1.0]: https://github.com/Limen-Neural/DendriteTrader.jl/releases/tag/v0.1.0
+[0.1.0]: https://github.com/rmems/DendriteTrader.jl/releases/tag/v0.1.0
