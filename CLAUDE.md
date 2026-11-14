@@ -86,6 +86,10 @@ Notes:
 - The dYdX integration testset in `test/integration/test_dydx.jl` is included by
   `test/runtests.jl` but returns early (0 tests) unless `DYDX_INTEGRATION=true`. It calls
   the public dYdX v4 testnet indexer. Do not enable it casually.
+- Expected `@test_broken` tests at `4a57690`: two event-overlap assertions in
+  `test/leakage_splits_labels.jl` (`label_violations`, `lookback_violations`) and one
+  zero-latency legacy-backtester assertion in `test/simulation.jl`
+  (`closed.entry_time > signals[2].timestamp_ns`).
 - CI (`ci.yml` `JuliaFormatter` job) and `AGENTS.md` run the non-mutating check above, pinned
   to JuliaFormatter 2.x in a temporary environment, so `Project.toml` is not modified. Do not
   use `format(".", check=true)`: JuliaFormatter 2.x ignores `check`, reformats in place and exits 0.
