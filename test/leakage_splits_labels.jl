@@ -156,31 +156,36 @@ end
 
     split_kwargs = (train_size = 30, validation_size = 9, test_size = 9)
 
-    # Calling the API as documented ("embargo must be at least the maximum feature or
-    # label horizon") with the horizon declared in events. The embargo is applied in row
-    # positions, so it covers only embargo / rows_per_event events.
-    documented = walk_forward_splits(
+    # Row-index embargo still under-covers when several rows share a sequence:
+    # the call below uses an event-denominated horizon of 2 as if it were a row
+    # gap, so split 1 trains through row 30 (sequence 10) and validates from row 33
+    # (sequence 11). Train row 25 (sequence 9) has a target at sequence 11 inside
+    # validation, and validation row 33 (sequence 11) reads back to sequence 9.
+    row_indexed = walk_forward_splits(
         n;
         split_kwargs...,
         embargo = max(horizon, lookback),
         max_horizon = max(horizon, lookback),
     )
-    # KNOWN GAP (do not fix in this PR): `walk_forward_splits` indexes row positions,
-    # not event sequences, so an event-denominated horizon under-embargoes whenever more
-    # than one row maps to an event. These assertions document the leak and will start
-    # passing (and must be flipped to @test) once splits are sequence-aware or reject
-    # duplicate sequences.
+    row_label_violations = label_horizon_violations(row_indexed, row_sequences, target_of)
+    row_lookback_violations = feature_lookback_violations(row_indexed, row_sequences, lookback_of)
+    @test (1, 25) in row_label_violations
+    @test (1, 33) in row_lookback_violations
+    @test all(lookback_of(row) >= first(row_sequences) for (_, row) in row_lookback_violations)
+
+    # Sequence-aware API: the same event-denominated horizon is applied as a
+    # sequence distance, so train labels and validation lookbacks no longer overlap.
+    documented = walk_forward_splits(
+        n;
+        split_kwargs...,
+        embargo = max(horizon, lookback),
+        max_horizon = max(horizon, lookback),
+        row_sequences = row_sequences,
+    )
     label_violations = label_horizon_violations(documented, row_sequences, target_of)
     lookback_violations = feature_lookback_violations(documented, row_sequences, lookback_of)
-    @test_broken isempty(label_violations)
-    @test_broken isempty(lookback_violations)
-    # The violations are real event overlaps, not lookback starts at or below zero: e.g.
-    # split 1 trains through row 30 (sequence 10) and validates from row 33 (sequence 11),
-    # so train row 25 (sequence 9) has a target at sequence 11 inside validation, and
-    # validation row 33 (sequence 11) reads back to sequence 9 inside train.
-    @test (1, 25) in label_violations
-    @test (1, 33) in lookback_violations
-    @test all(lookback_of(row) >= first(row_sequences) for (_, row) in lookback_violations)
+    @test isempty(label_violations)
+    @test isempty(lookback_violations)
 
     # Scaling the row embargo by rows-per-event removes the overlap, which confirms the
     # violation above is a unit mismatch rather than a test artifact.

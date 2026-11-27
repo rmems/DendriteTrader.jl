@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `walk_forward_splits` can count `embargo` and `max_horizon` in event-sequence
+  distance via `row_sequences`, so a horizon declared in events is not under-covered
+  when several rows share one sequence (RM-2220, #110).
+
 ### Documentation
 
 - `CLAUDE.md`: deduplicate agent gotchas and re-verify commands at `4a57690` (RM-2194).

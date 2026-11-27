@@ -23,10 +23,10 @@ struct ChronologicalSplit
             throw(ArgumentError("train range must precede validation range"))
         last(validation) < first(test) ||
             throw(ArgumentError("validation range must precede test range"))
-        _split_gap(first(validation), last(train)) == embargo ||
-            throw(ArgumentError("train/validation embargo does not match"))
-        _split_gap(first(test), last(validation)) == embargo ||
-            throw(ArgumentError("validation/test embargo does not match"))
+        _split_gap(first(validation), last(train)) >= embargo ||
+            throw(ArgumentError("train/validation gap is smaller than embargo"))
+        _split_gap(first(test), last(validation)) >= embargo ||
+            throw(ArgumentError("validation/test gap is smaller than embargo"))
         return new(train, validation, test, embargo)
     end
 end
@@ -98,11 +98,44 @@ function chronological_split(
     )
 end
 
+"""First row after `last_row` whose event sequence is at least last sequence + embargo + 1."""
+function _first_row_after_sequence_embargo(
+    row_sequences::AbstractVector{<:Integer},
+    last_row::Int,
+    embargo::Int,
+    n_int::Int,
+)
+    last_sequence = _split_index(row_sequences[last_row], "row sequence")
+    min_sequence = _split_boundary(_split_boundary(last_sequence, embargo), 1)
+    start_row = _split_boundary(last_row, 1)
+    for row in start_row:n_int
+        if _split_index(row_sequences[row], "row sequence") >= min_sequence
+            return row
+        end
+    end
+    return nothing
+end
+
 """
     walk_forward_splits(n; train_size, validation_size, test_size, embargo, max_horizon)
+    walk_forward_splits(n; train_size, validation_size, test_size, embargo, max_horizon, row_sequences)
 
 Build expanding training windows and disjoint evaluation windows. The embargo must
 be at least the maximum feature or label horizon declared by the experiment.
+
+`train_size`, `validation_size`, and `test_size` are always counted in rows.
+By default `embargo` and `max_horizon` are also counted in row positions, which is
+correct when each row is one event (`FeatureFrame` inputs have strictly increasing
+sequences).
+
+Pass `row_sequences` — the event sequence of each row, length `n`, non-decreasing —
+to count `embargo` and `max_horizon` in event-sequence distance instead. After a
+window ending at row `i` with sequence `s`, the next window starts at the first later
+row whose sequence is at least `s + embargo + 1`. Use this when several rows share
+one event (per-level or merged trade/book rows) so a horizon declared in events is
+not under-covered. `ChronologicalSplit.embargo` still stores the requested embargo
+(in the units of that call); the row gap may be larger than that value when
+sequences are shared.
 """
 function walk_forward_splits(
     n::Integer;
@@ -111,6 +144,7 @@ function walk_forward_splits(
     test_size::Integer,
     embargo::Integer,
     max_horizon::Integer,
+    row_sequences::Union{Nothing, AbstractVector{<:Integer}} = nothing,
 )
     n_int = _split_index(n, "n")
     train_size_int = _split_index(train_size, "train_size")
@@ -125,13 +159,35 @@ function walk_forward_splits(
     max_horizon_int >= 0 || throw(ArgumentError("max_horizon must be non-negative"))
     embargo_int >= max_horizon_int || throw(ArgumentError("embargo must be at least max_horizon"))
 
+    sequences = nothing
+    if row_sequences !== nothing
+        length(row_sequences) == n_int || throw(ArgumentError("row_sequences length must equal n"))
+        for index in 2:n_int
+            row_sequences[index] < row_sequences[index - 1] &&
+                throw(ArgumentError("row_sequences must be non-decreasing"))
+        end
+        sequences = row_sequences
+    end
+
     splits = ChronologicalSplit[]
     train_end = train_size_int
     while true
-        validation_start = _split_boundary(_split_boundary(train_end, embargo_int), 1)
-        validation_end = _split_boundary(validation_start, validation_size_int - 1)
-        test_start = _split_boundary(_split_boundary(validation_end, embargo_int), 1)
-        test_end = _split_boundary(test_start, test_size_int - 1)
+        if sequences === nothing
+            validation_start = _split_boundary(_split_boundary(train_end, embargo_int), 1)
+            validation_end = _split_boundary(validation_start, validation_size_int - 1)
+            test_start = _split_boundary(_split_boundary(validation_end, embargo_int), 1)
+            test_end = _split_boundary(test_start, test_size_int - 1)
+        else
+            validation_start =
+                _first_row_after_sequence_embargo(sequences, train_end, embargo_int, n_int)
+            validation_start === nothing && break
+            validation_end = _split_boundary(validation_start, validation_size_int - 1)
+            validation_end <= n_int || break
+            test_start =
+                _first_row_after_sequence_embargo(sequences, validation_end, embargo_int, n_int)
+            test_start === nothing && break
+            test_end = _split_boundary(test_start, test_size_int - 1)
+        end
         validation_start <= n_int || break
         validation_end <= n_int || break
         test_start <= n_int || break
