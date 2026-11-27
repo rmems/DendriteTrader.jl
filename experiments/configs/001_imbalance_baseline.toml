@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Smallest complete `dendritetrader.experiment.v1` example (Task 6 / issue #76):
+# replay the bundled 24-event synthetic session, fit the imbalance baseline on the
+# train split only, evaluate on the test split, and emit the trajectory export and
+# artifact set. Run from the repository root:
+#
+#   julia --project=. scripts/run_experiment.jl \
+#     experiments/configs/001_imbalance_baseline.toml experiments/runs/001
+
+schema = "dendritetrader.experiment.v1"
+name = "imbalance_baseline"
+seed = 7
+
+[data]
+session = "../data/tiny_session.jsonl"
+# sha256 = "<hex>"  # pin the dataset hash when a result must cite it
+allow_sequence_gaps = false
+
+[account]
+initial_cash_subunits = 1_000_000
+mode = "long_flat"
+price_scale = 100
+qty_scale = 1
+
+[latency]
+order_entry_ns = 5
+cancel_ns = 5
+report_ns = 5
+
+[feed]
+model = "receive_timestamp"
+
+[fill]
+queue_position = "back"
+taker_slippage_ticks = 0
+# seed defaults to the top-level seed
+
+[fees]
+maker_fee_ppm = 10
+taker_fee_ppm = 10
+per_fill_fee_subunits = 0
+
+[risk]
+max_order_lots = 10
+max_inventory_lots = 20
+max_initial_cash_subunits = 10_000_000
+max_open_orders = 8
+
+[policy]
+name = "forecast"
+model = "imbalance"
+horizon_events = 2
+threshold = 0.5
+imbalance_threshold = 0.0
+order_lots = 2
+max_inventory_lots = 4
+label_threshold_ticks = 0
+
+[splits]
+train_size = 10
+validation_size = 4
+test_size = 6
+# embargo must be >= the forecast/label horizon; it defaults to horizon_events
+embargo = 2
+evaluate_on = "test"
+
+[[outcomes.horizons]]
+kind = "events"
+n = 3
+
+[[outcomes.horizons]]
+kind = "wall_ns"
+ns = 15
+
+[[outcomes.horizons]]
+kind = "close"
+
+[[outcomes.horizons]]
+kind = "session_end"

@@ -207,7 +207,34 @@ The vendored `metabolic-ledger.parity.v1` fixtures (with `PROVENANCE.json` recor
 the source commit and SHA-256 of each file) are replayed by `run_parity_fixture`, and
 `parity_document` emits a long/flat simulation in the same schema for the Rust
 harness. `decision_records` and `fill_records` emit normalized JSON-ready records for
-a later trajectory export; that export is not implemented here.
+the trajectory export.
+
+## Experiment runner and trajectory export
+
+`load_experiment_config` reads a validated `dendritetrader.experiment.v1` TOML file
+(dataset path and optional pinned hash, account, latency, feed, fill model, fees,
+risk limits, policy, split sizes and outcome horizons). `run_experiment` executes it
+end to end: it loads and hashes the replay session, builds a chronological
+train/embargo/validation/embargo/test split over event positions, fits the declared
+baseline model and the `RollingZScore` on **train rows only**, drives `simulate!`
+with a wrapped decision function that may only act on the `evaluate_on` phase, and
+emits the issue #76 trajectory export. `write_artifacts` writes the artifact set
+atomically: `manifest.json`, `metrics.json`, `predictions.jsonl`,
+`trajectory.jsonl`, `snn_trajectory.jsonl`, `normalization.json` and `summary.md`.
+
+Each `trajectory.jsonl` row is a `paper_trajectory_step` preserving
+`market state -> signal -> decision -> paper action -> outcome`: the observed book
+and causal feature row, the forecast or external signal, every intent with its
+accept/reject record, the reported account state, and per-horizon outcomes
+(`events`, `wall_ns`, `close`, `session_end`) carrying paper PnL, return, drawdown
+contribution and MAE/MFE in integer subunits. Rejected decisions appear without
+fabricated PnL. `snn_trajectory.jsonl` is the compact supervisor-training view:
+phase, train-normalized features, the signal, the decision target and per-horizon
+paper PnL. The manifest records code provenance, dataset and result hashes, seeds,
+split boundaries, normalization parameters, assumptions and diagnostic flags
+(zero-latency, zero-cost); `run_id` and `core_hash` cover only the deterministic
+core. `scripts/run_experiment.jl` is the CLI;
+`experiments/configs/001_imbalance_baseline.toml` is the smallest runnable example.
 
 ## API reference
 
@@ -236,6 +263,14 @@ label_event_horizon
 MovementTarget
 ChronologicalSplit
 walk_forward_splits
+chronological_split
+OutcomeHorizonSpec
+ExperimentConfig
+load_experiment_config
+TrajectoryCall
+ExperimentResult
+run_experiment
+write_artifacts
 ForecastHorizon
 Forecast
 StationaryModel

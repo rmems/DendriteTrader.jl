@@ -125,11 +125,6 @@ export FeatureRow, FeatureFrame, microstructure_features
 export RollingZScore, fit!, transform!, normalization_parameters
 export MovementLabel, MovementTarget, Down, Flat, Up, label_event_horizon
 
-include("experiments/Experiments.jl")
-using .Experiments
-
-export ChronologicalSplit, walk_forward_splits
-
 """Reset transient state in an encoder or forecast model without discarding fitted parameters."""
 function reset_state! end
 
@@ -158,6 +153,13 @@ export SimulationMetrics, simulate!, ForecastPolicy, reconciliation_errors
 export zero_latency_components, is_zero_latency_diagnostic
 export decision_records, fill_records, audit_dict
 export PARITY_SCHEMA_ID, load_parity_fixture, run_parity_fixture, parity_document
+
+include("experiments/Experiments.jl")
+using .Experiments
+
+export ChronologicalSplit, walk_forward_splits, chronological_split
+export OutcomeHorizonSpec, ExperimentConfig, load_experiment_config
+export TrajectoryCall, ExperimentResult, run_experiment, write_artifacts
 
 """
     TradeSignal

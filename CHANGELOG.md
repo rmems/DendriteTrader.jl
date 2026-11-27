@@ -71,6 +71,32 @@ eight-argument form is kept); `DEFAULT_MAX_POSITION_FRACTION` is a new export; a
 
 ### Added
 
+- **Experiment runner and trajectory export (RM-2118, #76)**: `load_experiment_config`
+  validates a `dendritetrader.experiment.v1` TOML file (dataset path and optional
+  pinned SHA-256, account, latency, feed, fill model, fees, risk limits, policy,
+  split sizes, `evaluate_on`, and outcome horizons). `run_experiment` loads and
+  hashes the replay session, builds a chronological
+  train/embargo/validation/embargo/test split over event positions
+  (`chronological_split`), fits the declared baseline model and `RollingZScore` on
+  train rows only, drives `simulate!` with a wrapped policy that may only act on the
+  `evaluate_on` phase, and emits the trajectory export. `write_artifacts` writes
+  `manifest.json`, `metrics.json`, `predictions.jsonl`, `trajectory.jsonl`,
+  `snn_trajectory.jsonl`, `normalization.json` and `summary.md` atomically; the
+  manifest records code provenance, dataset/result/trajectory hashes, seeds, split
+  boundaries, normalization parameters, assumptions and zero-latency/zero-cost
+  diagnostic flags. `run_id` and `core_hash` cover only the deterministic core.
+  `trajectory.jsonl` rows preserve market state, signal, decision intents with
+  accept/reject records, reported account state, and per-horizon outcomes
+  (`events`, `wall_ns`, `close`, `session_end`) with paper PnL, return and MAE/MFE
+  in integer subunits; rejected decisions appear without fabricated PnL.
+  `snn_trajectory.jsonl` is the compact supervisor-training view (phase,
+  train-normalized features, signal, decision target, per-horizon PnL).
+  `scripts/run_experiment.jl` is the CLI and
+  `experiments/configs/001_imbalance_baseline.toml` (with the bundled 24-event
+  `experiments/data/tiny_session.jsonl`) is the smallest runnable example. New
+  exports: `chronological_split`, `OutcomeHorizonSpec`, `ExperimentConfig`,
+  `load_experiment_config`, `TrajectoryCall`, `ExperimentResult`, `run_experiment`,
+  `write_artifacts`.
 - **Latency-aware paper simulator (RM-1864)**: `simulate!` replays a `ReplaySession` with separate information, decision, activation and fill clocks (`FixedLatency`, `ReceiveTimestampFeed` / `FixedFeedDelay`), an explicitly approximate `L2QueueApproximation` fill model, integer `FeeSchedule`, bounded `RiskLimits`, and a per-step reconciled `PaperPortfolio` evaluation state. `SimulationResult` stores all assumptions, seeds and a SHA-256 result hash. Vendored `metabolic-ledger.parity.v1` fixtures are replayed with `run_parity_fixture`; `parity_document` emits long/flat runs in the same schema. Paper only; no order submission. Runs with any zero order-entry, cancel or report latency are labelled `diagnostic_zero_latency` in their assumptions and hash (`is_zero_latency_diagnostic`).
 - **Leakage canaries for splits and labels** (`test/leakage_splits_labels.jl`): walk-forward splits checked by event sequence on feature frames with skipped events and on row tables with several rows per event; `RidgeClassifier` parameters shown independent of rows and labels past the training frame; structural check that `MovementTarget` cannot be passed to `predict!`, `encode!`, `transform!`, sizing, or signal-execution APIs. Each canary has a deliberately leaky control. Two `@test_broken` assertions document that `walk_forward_splits` embargoes in row positions, not event sequences, so an event-denominated horizon under-embargoes when several rows share an event.
 - `CLAUDE.md`: Claude Code notes importing `AGENTS.md`, with research invariants, known invariant gaps, verified commands, and an architecture map.
