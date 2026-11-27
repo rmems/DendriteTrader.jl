@@ -819,13 +819,6 @@ function events(engine::ExecutionEngine)
     end
 end
 
-"""
-    portfolio_risk(engine) -> Float64
-
-Current gross notional portfolio exposure: the sum over tickers of the absolute
-position quantity multiplied by the last execution price seen for that ticker.
-Positions are marked at their last trade price, not the live market.
-"""
 function _portfolio_risk_unlocked(engine::ExecutionEngine)
     total = 0.0
     for (ticker, quantity) in engine.positions
@@ -835,6 +828,14 @@ function _portfolio_risk_unlocked(engine::ExecutionEngine)
     return total
 end
 
+"""
+    portfolio_risk(engine) -> Float64
+
+Current gross notional portfolio exposure: the sum over tickers of the absolute
+position quantity multiplied by the last execution price seen for that ticker.
+Positions are marked at their last trade price, not the live market. Safe to
+call concurrently with [`execute_signal!`](@ref).
+"""
 function portfolio_risk(engine::ExecutionEngine)
     return lock(engine.state_lock) do
         return _portfolio_risk_unlocked(engine)
