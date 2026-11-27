@@ -639,7 +639,7 @@ function _experiment_manifest(
         "artifacts" => Dict{String, Any}(),
         "reproduction" => Dict{String, Any}(
             "command" => "julia --project=. scripts/run_experiment.jl <config.toml> <outdir>",
-            "determinism" => "core_hash covers the config document, dataset hash, simulation result hash and trajectory hash; generated_utc is outside it",
+            "determinism" => "core_hash covers the config document, dataset hash and simulation result hash; trajectory_sha256 covers the stamped rows, and generated_utc is outside both",
         ),
         "disclaimer" => "Experimental research output on replayed data. Fills are L2 approximations. Not a production HFT runtime, profit claim or financial advice.",
     )
