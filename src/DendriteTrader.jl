@@ -597,11 +597,28 @@ Stateful execution engine with confidence gating and position management.
                           for each ticker; a signal that only reduces an
                           existing position is never rejected by this cap.
 - `payoff_ratio`:         odds-style average win/loss ratio for Kelly sizing (default 1.5)
-- `positions`:            current open positions (ticker → quantity)
-- `last_prices`:          last execution price per ticker, for exposure valuation
+- `positions`:            current open positions (ticker → quantity). Do not
+                          read or write this dict concurrently; use
+                          [`execute_signal!`](@ref) and [`portfolio_risk`](@ref).
+- `last_prices`:          last execution price per ticker, for exposure valuation.
+                          Same restriction as `positions`.
 - `log_file`:             optional path to a JSON-lines event log
 - `log_io`:               open file handle for the event log (if configured)
+- `state_lock`:           lock serializing `positions`, `last_prices`, signal
+                          counters, `events`, and `execute_signal!`
 - `log_lock`:             lock serializing `log_io` writes
+
+# Concurrency
+
+`execute_signal!`, [`portfolio_risk`](@ref), [`fill_rate`](@ref), and
+[`events`](@ref) may be called concurrently on one engine. The portfolio
+exposure check and the accepted position and price updates are one atomic
+operation under `state_lock`, so concurrent trades cannot jointly exceed
+`max_portfolio_exposure` through stale checks. `events` returns a snapshot
+copy. Direct access to `positions`, `last_prices`, the signal counters, or the
+`events` vector is not concurrency-safe. `flush_log!` and `close_log!` may run
+alongside `execute_signal!` (they use `log_lock` only). `start!` / `stop!` are
+unchanged: `should_stop` is already an atomic flag.
 """
 mutable struct ExecutionEngine
     confidence_threshold::Float32
@@ -618,6 +635,7 @@ mutable struct ExecutionEngine
     events::Vector{SignalEvent}
     log_file::Union{String, Nothing}
     log_io::Union{IOStream, Nothing}
+    state_lock::ReentrantLock
     log_lock::ReentrantLock
 end
 
@@ -768,6 +786,7 @@ function ExecutionEngine(;
         log_file,
         log_io,
         ReentrantLock(),
+        ReentrantLock(),
     )
     finalizer(close_log!, engine)
     return engine
@@ -790,24 +809,37 @@ end
 """
     events(engine) -> Vector{SignalEvent}
 
-Return the event log for this engine.
+Return a snapshot copy of the in-memory event log. Safe to call concurrently
+with [`execute_signal!`](@ref), [`portfolio_risk`](@ref), and [`fill_rate`](@ref).
+Direct access to `engine.events` is not concurrency-safe.
 """
-events(engine::ExecutionEngine) = engine.events
+function events(engine::ExecutionEngine)
+    return lock(engine.state_lock) do
+        return copy(engine.events)
+    end
+end
 
-"""
-    portfolio_risk(engine) -> Float64
-
-Current gross notional portfolio exposure: the sum over tickers of the absolute
-position quantity multiplied by the last execution price seen for that ticker.
-Positions are marked at their last trade price, not the live market.
-"""
-function portfolio_risk(engine::ExecutionEngine)
+function _portfolio_risk_unlocked(engine::ExecutionEngine)
     total = 0.0
     for (ticker, quantity) in engine.positions
         price = get(engine.last_prices, ticker, 0.0)
         total += abs(quantity) * price
     end
     return total
+end
+
+"""
+    portfolio_risk(engine) -> Float64
+
+Current gross notional portfolio exposure: the sum over tickers of the absolute
+position quantity multiplied by the last execution price seen for that ticker.
+Positions are marked at their last trade price, not the live market. Safe to
+call concurrently with [`execute_signal!`](@ref).
+"""
+function portfolio_risk(engine::ExecutionEngine)
+    return lock(engine.state_lock) do
+        return _portfolio_risk_unlocked(engine)
+    end
 end
 
 # True when an order of `units` on `side` only reduces the existing signed position
@@ -897,6 +929,10 @@ accounting is already broken and is rejected as `sizing_reject` even with an ove
 A valid input that yields zero Kelly units, such as no edge or `kelly_scalar = 0`, is a
 real sizing decision and is reported as `zero_reject`, not as `sizing_reject`.
 
+Concurrent calls to `execute_signal!` on the same engine are supported: the
+exposure check and the accepted position and price updates run under one lock,
+together with counter and event-log updates. See [`ExecutionEngine`](@ref).
+
 Behavior change: earlier versions silently capped Kelly-sized units with
 `min(units, max_position_size)` and executed the reduced size, and treated
 `account_balance <= 0` or `price <= 0` as a `zero_reject` with no specific reason.
@@ -912,213 +948,224 @@ function execute_signal!(
     observed_ns::Union{Nothing, Integer} = nothing,
     position_units_override::Union{Nothing, Real} = nothing,
 )::ExecutionDecision
-    engine.total_signals += 1
-    lat = observed_ns === nothing ? latency_ns(signal) : latency_ns(signal, observed_ns)
+    return lock(engine.state_lock) do
+        engine.total_signals += 1
+        lat = observed_ns === nothing ? latency_ns(signal) : latency_ns(signal, observed_ns)
 
-    if !passes_gate(signal, engine.confidence_threshold)
-        engine.rejected_signals += 1
-        reason = "confidence=$(signal.confidence) < threshold=$(engine.confidence_threshold)"
-        _record_event!(
-            engine,
-            SignalEvent(
-                "gate_reject",
-                signal.ticker,
-                signal.confidence,
-                string(signal.side);
-                reason = reason,
-                latency_ns = lat,
-            ),
-        )
-        return ExecutionDecision(signal, false, reason, 0.0, 0.0, 0.0, lat)
-    end
-
-    if signal.side == Neutral
-        engine.rejected_signals += 1
-        _record_event!(
-            engine,
-            SignalEvent(
-                "neutral_reject",
-                signal.ticker,
-                signal.confidence,
-                string(signal.side);
-                latency_ns = lat,
-            ),
-        )
-        return ExecutionDecision(signal, false, "neutral signal", 0.0, 0.0, 0.0, lat)
-    end
-
-    # Invalid sizing inputs (non-positive or non-finite price or balance, confidence
-    # outside [0, 1], invalid payoff ratio) are rejected with an explicit reason rather
-    # than sized to zero or coerced into range.
-    #
-    # Exception: an explicit-fill override (e.g. a simulator closing an open position)
-    # does not use the Kelly size, so it may proceed when the account balance is
-    # finite but non-positive. Price and confidence are still validated, and the reported Kelly
-    # fraction is 0.0 because no Kelly size was computed.
-    sizing_error = nothing
-    kelly = 0.0
-    kelly_units = 0.0
-    if position_units_override !== nothing && isfinite(account_balance) && account_balance <= 0.0
-        # Same price and confidence validation as `size_position`; only the balance check
-        # (which Kelly sizing needs and the override does not) is skipped.
-        conf = Float64(signal.confidence)
-        if !(isfinite(signal.price) && signal.price > 0.0)
-            sizing_error = "price must be finite and positive, got $(repr(signal.price))"
-        elseif !(isfinite(conf) && 0.0 <= conf <= 1.0)
-            sizing_error = "confidence must be a finite probability in [0, 1], got $(repr(conf))"
-        end
-    else
-        try
-            position = size_position(
-                confidence = Float64(signal.confidence),
-                price = signal.price,
-                account_balance = account_balance,
-                payoff_ratio = engine.payoff_ratio,
+        if !passes_gate(signal, engine.confidence_threshold)
+            engine.rejected_signals += 1
+            reason = "confidence=$(signal.confidence) < threshold=$(engine.confidence_threshold)"
+            _record_event!(
+                engine,
+                SignalEvent(
+                    "gate_reject",
+                    signal.ticker,
+                    signal.confidence,
+                    string(signal.side);
+                    reason = reason,
+                    latency_ns = lat,
+                ),
             )
-            kelly = position.kelly_fraction
-            kelly_units = position.units
-        catch e
-            e isa ArgumentError || rethrow()
-            sizing_error = e.msg
+            return ExecutionDecision(signal, false, reason, 0.0, 0.0, 0.0, lat)
         end
-    end
-    if sizing_error !== nothing
-        engine.rejected_signals += 1
-        reason = "invalid_sizing_input: $(sizing_error)"
+
+        if signal.side == Neutral
+            engine.rejected_signals += 1
+            _record_event!(
+                engine,
+                SignalEvent(
+                    "neutral_reject",
+                    signal.ticker,
+                    signal.confidence,
+                    string(signal.side);
+                    latency_ns = lat,
+                ),
+            )
+            return ExecutionDecision(signal, false, "neutral signal", 0.0, 0.0, 0.0, lat)
+        end
+
+        # Invalid sizing inputs (non-positive or non-finite price or balance, confidence
+        # outside [0, 1], invalid payoff ratio) are rejected with an explicit reason rather
+        # than sized to zero or coerced into range.
+        #
+        # Exception: an explicit-fill override (e.g. a simulator closing an open position)
+        # does not use the Kelly size, so it may proceed when the account balance is
+        # finite but non-positive. Price and confidence are still validated, and the reported Kelly
+        # fraction is 0.0 because no Kelly size was computed.
+        sizing_error = nothing
+        kelly = 0.0
+        kelly_units = 0.0
+        if position_units_override !== nothing &&
+           isfinite(account_balance) &&
+           account_balance <= 0.0
+            # Same price and confidence validation as `size_position`; only the balance check
+            # (which Kelly sizing needs and the override does not) is skipped.
+            conf = Float64(signal.confidence)
+            if !(isfinite(signal.price) && signal.price > 0.0)
+                sizing_error = "price must be finite and positive, got $(repr(signal.price))"
+            elseif !(isfinite(conf) && 0.0 <= conf <= 1.0)
+                sizing_error = "confidence must be a finite probability in [0, 1], got $(repr(conf))"
+            end
+        else
+            try
+                position = size_position(
+                    confidence = Float64(signal.confidence),
+                    price = signal.price,
+                    account_balance = account_balance,
+                    payoff_ratio = engine.payoff_ratio,
+                )
+                kelly = position.kelly_fraction
+                kelly_units = position.units
+            catch e
+                e isa ArgumentError || rethrow()
+                sizing_error = e.msg
+            end
+        end
+        if sizing_error !== nothing
+            engine.rejected_signals += 1
+            reason = "invalid_sizing_input: $(sizing_error)"
+            _record_event!(
+                engine,
+                SignalEvent(
+                    "sizing_reject",
+                    signal.ticker,
+                    signal.confidence,
+                    string(signal.side);
+                    reason = reason,
+                    latency_ns = lat,
+                ),
+            )
+            return ExecutionDecision(signal, false, reason, 0.0, 0.0, 0.0, lat)
+        end
+
+        price = Float64(signal.price)
+        current = get(engine.positions, signal.ticker, 0.0)
+        units = if position_units_override === nothing
+            kelly_units
+        else
+            overridden = Float64(position_units_override)
+            if !isfinite(overridden) || overridden < 0.0
+                throw(ArgumentError("position_units_override must be finite and non-negative"))
+            end
+            overridden
+        end
+
+        # Position caps reject, never shrink (research invariant 7). The absolute unit cap
+        # applies to every order. The relative cap (projected position in this ticker) applies
+        # to every order except one that only reduces the existing position: price and
+        # balance drift after entry, and a cap that blocks a reduction would trap the position.
+        cap_reason =
+            _position_cap_violation(engine, units, price, account_balance, current, signal.side)
+        if cap_reason !== nothing
+            if position_units_override !== nothing
+                # An explicit fill quantity above a cap is a caller error, not a decision.
+                throw(ArgumentError("position_units_override rejected: $(cap_reason)"))
+            end
+            engine.rejected_signals += 1
+            _record_event!(
+                engine,
+                SignalEvent(
+                    "max_position_reject",
+                    signal.ticker,
+                    signal.confidence,
+                    string(signal.side);
+                    reason = cap_reason,
+                    kelly_fraction = kelly,
+                    latency_ns = lat,
+                ),
+            )
+            return ExecutionDecision(signal, false, cap_reason, kelly, 0.0, 0.0, lat)
+        end
+
+        if units <= 0.0
+            engine.rejected_signals += 1
+            _record_event!(
+                engine,
+                SignalEvent(
+                    "zero_reject",
+                    signal.ticker,
+                    signal.confidence,
+                    string(signal.side);
+                    reason = "zero-sized position",
+                    kelly_fraction = kelly,
+                    latency_ns = lat,
+                ),
+            )
+            return ExecutionDecision(signal, false, "zero-sized position", kelly, 0.0, 0.0, lat)
+        end
+
+        applied_fraction = account_balance <= 0.0 ? 0.0 : (units * signal.price) / account_balance
+
+        # Portfolio exposure cap: gross notional (Σ |quantity| × last trade price)
+        # after applying this signal must not exceed the cap. An order that only
+        # reduces the existing position in this ticker (no increase, no side flip)
+        # is exempt, matching the max_position_fraction exemption above: the
+        # projection revalues the remaining units at the new price, so a price rise
+        # can put the projected exposure over the cap even while |position| falls,
+        # and a cap that rejects a reduction would trap the position (#111).
+        projected_quantity = signal.side == Buy ? current + units : current - units
+        prior_ticker_exposure = abs(current) * get(engine.last_prices, signal.ticker, 0.0)
+        projected_ticker_exposure = abs(projected_quantity) * price
+        projected_exposure =
+            _portfolio_risk_unlocked(engine) - prior_ticker_exposure + projected_ticker_exposure
+        if !_reduces_position(current, units, signal.side) &&
+           projected_exposure > engine.max_portfolio_exposure
+            engine.rejected_signals += 1
+            reason = "portfolio exposure $(projected_exposure) would exceed cap $(engine.max_portfolio_exposure)"
+            _record_event!(
+                engine,
+                SignalEvent(
+                    "portfolio_reject",
+                    signal.ticker,
+                    signal.confidence,
+                    string(signal.side);
+                    reason = reason,
+                    kelly_fraction = kelly,
+                    latency_ns = lat,
+                ),
+            )
+            return ExecutionDecision(signal, false, reason, kelly, 0.0, 0.0, lat)
+        end
+
+        # Update position book
+        if signal.side == Buy
+            engine.positions[signal.ticker] = current + units
+        elseif signal.side == Sell
+            engine.positions[signal.ticker] = current - units
+        end
+        engine.last_prices[signal.ticker] = price
+
+        engine.executed_signals += 1
         _record_event!(
             engine,
             SignalEvent(
-                "sizing_reject",
+                "executed",
                 signal.ticker,
                 signal.confidence,
                 string(signal.side);
-                reason = reason,
-                latency_ns = lat,
-            ),
-        )
-        return ExecutionDecision(signal, false, reason, 0.0, 0.0, 0.0, lat)
-    end
-
-    price = Float64(signal.price)
-    current = get(engine.positions, signal.ticker, 0.0)
-    units = if position_units_override === nothing
-        kelly_units
-    else
-        overridden = Float64(position_units_override)
-        if !isfinite(overridden) || overridden < 0.0
-            throw(ArgumentError("position_units_override must be finite and non-negative"))
-        end
-        overridden
-    end
-
-    # Position caps reject, never shrink (research invariant 7). The absolute unit cap
-    # applies to every order. The relative cap (projected position in this ticker) applies
-    # to every order except one that only reduces the existing position: price and
-    # balance drift after entry, and a cap that blocks a reduction would trap the position.
-    cap_reason =
-        _position_cap_violation(engine, units, price, account_balance, current, signal.side)
-    if cap_reason !== nothing
-        if position_units_override !== nothing
-            # An explicit fill quantity above a cap is a caller error, not a decision.
-            throw(ArgumentError("position_units_override rejected: $(cap_reason)"))
-        end
-        engine.rejected_signals += 1
-        _record_event!(
-            engine,
-            SignalEvent(
-                "max_position_reject",
-                signal.ticker,
-                signal.confidence,
-                string(signal.side);
-                reason = cap_reason,
                 kelly_fraction = kelly,
                 latency_ns = lat,
+                executed = true,
+                position_units = units,
+                applied_fraction = applied_fraction,
             ),
         )
-        return ExecutionDecision(signal, false, cap_reason, kelly, 0.0, 0.0, lat)
+        return ExecutionDecision(signal, true, "executed", kelly, applied_fraction, units, lat)
     end
-
-    if units <= 0.0
-        engine.rejected_signals += 1
-        _record_event!(
-            engine,
-            SignalEvent(
-                "zero_reject",
-                signal.ticker,
-                signal.confidence,
-                string(signal.side);
-                reason = "zero-sized position",
-                kelly_fraction = kelly,
-                latency_ns = lat,
-            ),
-        )
-        return ExecutionDecision(signal, false, "zero-sized position", kelly, 0.0, 0.0, lat)
-    end
-
-    applied_fraction = account_balance <= 0.0 ? 0.0 : (units * signal.price) / account_balance
-
-    # Portfolio exposure cap: gross notional (Σ |quantity| × last trade price)
-    # after applying this signal must not exceed the cap. An order that only
-    # reduces the existing position in this ticker (no increase, no side flip)
-    # is exempt, matching the max_position_fraction exemption above: the
-    # projection revalues the remaining units at the new price, so a price rise
-    # can put the projected exposure over the cap even while |position| falls,
-    # and a cap that rejects a reduction would trap the position (#111).
-    projected_quantity = signal.side == Buy ? current + units : current - units
-    prior_ticker_exposure = abs(current) * get(engine.last_prices, signal.ticker, 0.0)
-    projected_ticker_exposure = abs(projected_quantity) * price
-    projected_exposure = portfolio_risk(engine) - prior_ticker_exposure + projected_ticker_exposure
-    if !_reduces_position(current, units, signal.side) &&
-       projected_exposure > engine.max_portfolio_exposure
-        engine.rejected_signals += 1
-        reason = "portfolio exposure $(projected_exposure) would exceed cap $(engine.max_portfolio_exposure)"
-        _record_event!(
-            engine,
-            SignalEvent(
-                "portfolio_reject",
-                signal.ticker,
-                signal.confidence,
-                string(signal.side);
-                reason = reason,
-                kelly_fraction = kelly,
-                latency_ns = lat,
-            ),
-        )
-        return ExecutionDecision(signal, false, reason, kelly, 0.0, 0.0, lat)
-    end
-
-    # Update position book
-    if signal.side == Buy
-        engine.positions[signal.ticker] = current + units
-    elseif signal.side == Sell
-        engine.positions[signal.ticker] = current - units
-    end
-    engine.last_prices[signal.ticker] = price
-
-    engine.executed_signals += 1
-    _record_event!(
-        engine,
-        SignalEvent(
-            "executed",
-            signal.ticker,
-            signal.confidence,
-            string(signal.side);
-            kelly_fraction = kelly,
-            latency_ns = lat,
-            executed = true,
-            position_units = units,
-            applied_fraction = applied_fraction,
-        ),
-    )
-    return ExecutionDecision(signal, true, "executed", kelly, applied_fraction, units, lat)
 end
 
 """
     fill_rate(engine) -> Float64
 
-Fraction of signals that were executed (not rejected).
+Fraction of signals that were executed (not rejected). Safe to call
+concurrently with [`execute_signal!`](@ref). Direct access to the signal
+counters is not concurrency-safe.
 """
-fill_rate(e::ExecutionEngine) = e.total_signals == 0 ? 0.0 : e.executed_signals / e.total_signals
+function fill_rate(e::ExecutionEngine)
+    return lock(e.state_lock) do
+        return e.total_signals == 0 ? 0.0 : e.executed_signals / e.total_signals
+    end
+end
 
 """
     load_history(path) -> Vector{SignalEvent}
