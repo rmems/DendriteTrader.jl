@@ -299,11 +299,11 @@ end
 
 _key(a::_Action) = (a.ts_ns, a.rank, a.id)
 
+include("Indexes.jl")
+
 mutable struct _SimState
     config::SimulationConfig
     portfolio::PaperPortfolio
-    start_cash::Int64
-    start_inventory::Int64
     venue::OrderBookState
     observed::OrderBookState
     depletion::Dict{Tuple{BookSide, Int64}, Int64}
@@ -323,6 +323,7 @@ mutable struct _SimState
     run::Int
     join_counter::Int64
     absorbed::Dict{Tuple{BookSide, Int64}, Int64}
+    indexes::_SimIndexes
 end
 
 function _schedule!(state::_SimState, ts::Int64, rank::Int, order_id::Int64)
@@ -333,7 +334,52 @@ function _schedule!(state::_SimState, ts::Int64, rank::Int, order_id::Int64)
     return action
 end
 
-_live_orders(state::_SimState) = (o for o in state.orders if _is_live(o))
+# Materialize only a touched level, in join order. Fill processing may unlink orders,
+# so event handlers use this stable list rather than following links during mutation.
+function _level_orders(state::_SimState, side::TradeSide, price::Int64)
+    level = get(state.indexes.levels, (side, price), nothing)
+    orders = PaperOrder[]
+    level === nothing && return orders
+    id = level.head
+    while id != 0
+        push!(orders, state.orders[id])
+        id = state.indexes.resting.next[id]
+    end
+    return orders
+end
+
+function _own_ahead(state::_SimState, order::PaperOrder)
+    level = state.indexes.levels[(order.intent.side, order.intent.limit_price_ticks)]
+    return _prefix(level, state.indexes.slots[order.order_id] - 1)
+end
+
+function _queue_terminal!(state::_SimState, order::PaperOrder)
+    push!(
+        state.indexes.reports,
+        _Report(
+            _checked_time(order.terminal_ts_ns, state.config.latency.report_ns),
+            0,
+            order.order_id,
+        ),
+    )
+    return nothing
+end
+
+# Reserve rounding is per order, so subtract the old reserve and add the new one;
+# reserving once on aggregated lots would change rejection behavior.
+function _change_live!(state::_SimState, order::PaperOrder, before::Int64, after::Int64)
+    indexes = state.indexes
+    if order.intent.side == Buy
+        indexes.live_buy += after - before
+        before > 0 &&
+            (indexes.reserved_cash -= _buy_reserve(state, order.intent.limit_price_ticks, before))
+        after > 0 &&
+            (indexes.reserved_cash += _buy_reserve(state, order.intent.limit_price_ticks, after))
+    else
+        indexes.live_sell += after - before
+    end
+    return nothing
+end
 
 function _splitmix64(x::UInt64)
     z = x + 0x9e3779b97f4a7c15
@@ -356,21 +402,14 @@ function _risk_reject_reason(state::_SimState, intent::OrderIntent)
     limits = state.config.limits
     p = state.portfolio
     intent.qty_lots <= limits.max_order_lots || return "order_size_limit"
-    count(_ -> true, _live_orders(state)) < limits.max_open_orders || return "open_order_limit"
-    live_buy =
-        sum((o.remaining_lots for o in _live_orders(state) if o.intent.side == Buy); init = 0)
-    live_sell =
-        sum((o.remaining_lots for o in _live_orders(state) if o.intent.side == Sell); init = 0)
+    indexes = state.indexes
+    indexes.live_count < limits.max_open_orders || return "open_order_limit"
+    live_buy = indexes.live_buy
+    live_sell = indexes.live_sell
     if intent.side == Buy
         Int128(p.inventory_lots) + live_buy + intent.qty_lots <= limits.max_inventory_lots ||
             return "inventory_limit"
-        reserved = sum(
-            (
-                Int128(_buy_reserve(state, o.intent.limit_price_ticks, o.remaining_lots)) for
-                o in _live_orders(state) if o.intent.side == Buy
-            );
-            init = Int128(0),
-        )
+        reserved = indexes.reserved_cash
         Int128(_buy_reserve(state, intent.limit_price_ticks, intent.qty_lots)) <=
         Int128(p.cash_subunits) - reserved || return "insufficient_cash"
     else
@@ -433,6 +472,13 @@ function _record_fill!(
     push!(state.fills, fill)
     push!(state.fill_cash_flows, side == Buy ? -(notional + fee) : notional - fee)
     push!(get!(state.fills_by_order, order.order_id, Int[]), length(state.fills))
+    push!(state.indexes.reports, _Report(fill.report_ts_ns, length(state.fills), 0))
+    _change_live!(state, order, order.remaining_lots, order.remaining_lots - qty)
+    if order.resting
+        level = state.indexes.levels[(side, order.intent.limit_price_ticks)]
+        _change_lots!(level, state.indexes.slots[order.order_id], -qty)
+        order.remaining_lots == qty && _leave_level!(state.indexes, order)
+    end
     order.remaining_lots -= qty
     order.filled_lots += qty
     if order.remaining_lots == 0
@@ -440,15 +486,25 @@ function _record_fill!(
         order.resting = false
         order.terminal_ts_ns = ts
         order.terminal_reason = "filled"
+        state.indexes.live_count -= 1
+        _queue_terminal!(state, order)
     end
     return fill
 end
 
 function _terminate!(state::_SimState, order::PaperOrder, status::Symbol, kind::Symbol, ts, reason)
+    _change_live!(state, order, order.remaining_lots, Int64(0))
+    state.indexes.live_count -= 1
+    if order.resting
+        level = state.indexes.levels[(order.intent.side, order.intent.limit_price_ticks)]
+        _change_lots!(level, state.indexes.slots[order.order_id], -order.remaining_lots)
+        _leave_level!(state.indexes, order)
+    end
     order.status = status
     order.resting = false
     order.terminal_ts_ns = ts
     order.terminal_reason = reason
+    _queue_terminal!(state, order)
     record_non_fill!(
         state.portfolio,
         kind,
@@ -518,82 +574,59 @@ function _activate!(state::_SimState, order::PaperOrder, ts::Int64)
         # Seeded draw, but never ahead of the venue lots that already sit in front of an
         # earlier simulated order at this level (our own orders keep time priority).
         draw = Int64(_splitmix64(model.seed ⊻ UInt64(order.order_id)) % UInt64(displayed + 1))
-        earlier = [
-            o.queue_ahead_lots for
-            o in _resting_orders(state) if o.intent.side == intent.side &&
-                o.intent.limit_price_ticks == intent.limit_price_ticks
-        ]
+        earlier = (
+            o.queue_ahead_lots for o in _level_orders(state, intent.side, intent.limit_price_ticks)
+        )
         max(draw, maximum(earlier; init = Int64(0)))
     end
     state.join_counter += 1
     order.join_seq = state.join_counter
     order.queue_ahead_lots = ahead
-    order.initial_queue_ahead_lots = ahead + _own_ahead(_resting_orders(state), order)
+    _join_level!(state.indexes, order)
+    order.initial_queue_ahead_lots = ahead + _own_ahead(state, order)
     order.resting = true
     return nothing
 end
-
-# Resting simulated orders in FIFO join order.
-function _resting_orders(state::_SimState)
-    resting = [o for o in state.orders if o.resting && o.status == :active]
-    return sort!(resting; by = o -> o.join_seq)
-end
-
-# Remaining size of simulated orders that joined the same level earlier than `order`.
-_own_ahead(resting, order::PaperOrder) = sum(
-    (
-        o.remaining_lots for o in resting if o !== order &&
-            o.join_seq < order.join_seq &&
-            o.intent.side == order.intent.side &&
-            o.intent.limit_price_ticks == order.intent.limit_price_ticks
-    );
-    init = Int64(0),
-)
 
 function _on_book_delta!(state::_SimState, event::BookDelta)
     levels = _levels(state.venue, event.side)
     displayed = get(levels, event.price_ticks, Int64(0))
     displayed == 0 && delete!(state.depletion, (event.side, event.price_ticks))
-    # Quote-through liquidity goes to better-priced resting orders first (price-time).
-    for order in sort!(_resting_orders(state); by = _priority)
-        intent = order.intent
-        if event.side == _own_book_side(intent.side) &&
-           event.price_ticks == intent.limit_price_ticks
-            # Only venue size ahead can be cancelled by a venue delta; simulated orders
-            # that joined earlier stay ahead until they fill or are cancelled.
-            # The cap uses simulated-world venue size (displayed + absorbed print volume),
-            # so a data decrease caused by a print our orders absorbed is not counted twice.
-            simulated_venue = _simulated_venue(state, event.side, event.price_ticks)
-            event.size_delta < 0 &&
-                (order.queue_ahead_lots = min(order.queue_ahead_lots, simulated_venue))
-        elseif event.size_delta > 0 &&
-               event.side == _opposite_book_side(intent.side) &&
-               _strictly_through(intent.side, event.price_ticks, intent.limit_price_ticks)
-            available = _effective_size(state.venue, state.depletion, event.side, event.price_ticks)
-            qty = min(available, order.remaining_lots)
-            qty > 0 || continue
-            _deplete!(state.depletion, event.side, event.price_ticks, qty)
-            _record_fill!(
-                state,
-                order,
-                intent.limit_price_ticks,
-                intent.limit_price_ticks,
-                qty,
-                :maker,
-                event.exchange_ts_ns,
-                :quote_through,
-                event.sequence,
-            )
+    own_side = event.side == Bid ? Buy : Sell
+    # Only the changed level can reduce venue size ahead.
+    if event.size_delta < 0
+        simulated_venue = _simulated_venue(state, event.side, event.price_ticks)
+        for order in _level_orders(state, own_side, event.price_ticks)
+            order.queue_ahead_lots = min(order.queue_ahead_lots, simulated_venue)
         end
+    end
+    event.size_delta > 0 || return nothing
+    # Quote-through liquidity goes to better-priced opposite orders first.
+    side = own_side == Buy ? Sell : Buy
+    prices = state.indexes.prices[side]
+    eligible =
+        side == Buy ? reverse(prices[(searchsortedlast(prices, event.price_ticks) + 1):end]) :
+        prices[1:(searchsortedfirst(prices, event.price_ticks) - 1)]
+    for price in eligible, order in _level_orders(state, side, price)
+        intent = order.intent
+        available = _effective_size(state.venue, state.depletion, event.side, event.price_ticks)
+        qty = min(available, order.remaining_lots)
+        qty > 0 || continue
+        _deplete!(state.depletion, event.side, event.price_ticks, qty)
+        _record_fill!(
+            state,
+            order,
+            intent.limit_price_ticks,
+            intent.limit_price_ticks,
+            qty,
+            :maker,
+            event.exchange_ts_ns,
+            :quote_through,
+            event.sequence,
+        )
     end
     return nothing
 end
-
-# Price-time priority key for resting orders: better limit first, then FIFO join order.
-_priority(order::PaperOrder) = (
-    order.intent.side == Buy ? -order.intent.limit_price_ticks : order.intent.limit_price_ticks,
-    order.join_seq,
-)
 
 # Estimated venue lots resting at a level in the simulated world: displayed size (net of
 # our own taker depletion) plus print volume our orders absorbed there.
@@ -612,12 +645,11 @@ function _on_trade_print!(state::_SimState, event::TradePrint)
     # exceed the print size in total.
     side = event.aggressor_side == Sell ? Buy : Sell
     book_side = _own_book_side(side)
-    resting = _resting_orders(state)
-    hit = [
-        o for o in resting if o.intent.side == side &&
-            _within_limit(side, event.price_ticks, o.intent.limit_price_ticks)
-    ]
-    prices = Set{Int64}(o.intent.limit_price_ticks for o in hit)
+    indexed_prices = state.indexes.prices[side]
+    hit_prices =
+        side == Buy ? indexed_prices[searchsortedfirst(indexed_prices, event.price_ticks):end] :
+        indexed_prices[1:searchsortedlast(indexed_prices, event.price_ticks)]
+    prices = Set{Int64}(hit_prices)
     push!(prices, event.price_ticks)
     for price in keys(_levels(state.venue, book_side))
         _within_limit(side, event.price_ticks, price) && push!(prices, price)
@@ -645,9 +677,8 @@ function _on_trade_print!(state::_SimState, event::TradePrint)
     # still record that the data's removal of traded size did not happen in the
     # simulated world (otherwise later orders would see too little venue size ahead).
     for price in sort!(collect(prices); rev = side == Buy)
-        level_orders =
-            sort!([o for o in hit if o.intent.limit_price_ticks == price]; by = _priority)
-        own_before = Dict(o.order_id => _own_ahead(resting, o) for o in level_orders)
+        level_orders = _level_orders(state, side, price)
+        own_before = Dict(o.order_id => _own_ahead(state, o) for o in level_orders)
         venue_total = _simulated_venue(state, book_side, price)
         for order in level_orders
             venue_total = max(venue_total, order.queue_ahead_lots)
@@ -678,7 +709,7 @@ function _on_trade_print!(state::_SimState, event::TradePrint)
             _is_live(order) || continue
             ahead = Int128(order.queue_ahead_lots) + own_before[order.order_id]
             total_after = max(Int128(0), ahead - budget)
-            order.queue_ahead_lots = Int64(max(Int128(0), total_after - _own_ahead(resting, order)))
+            order.queue_ahead_lots = Int64(max(Int128(0), total_after - _own_ahead(state, order)))
         end
         # Simulated-world venue size = replayed displayed size + absorbed. The replayed data
         # is expected to remove up to the print size of displayed size at the print price.
@@ -711,31 +742,30 @@ end
 # ── Observation / decisions ──────────────────────────────────────────────────
 
 function _reported_view(state::_SimState, ts::Int64)
-    report_ns = state.config.latency.report_ns
-    inventory = state.start_inventory
-    cash = state.start_cash
-    for (index, fill) in enumerate(state.fills)
-        fill.report_ts_ns <= ts || continue
-        inventory += fill.side == Buy ? fill.qty_lots : -fill.qty_lots
-        cash += state.fill_cash_flows[index]
+    indexes = state.indexes
+    # All source transitions occur in driver clock order; fixed report latency
+    # preserves that order, including ties. Reports do not add ledger steps.
+    while indexes.report_cursor <= length(indexes.reports)
+        report = indexes.reports[indexes.report_cursor]
+        report.ts <= ts || break
+        if report.fill_index != 0
+            fill = state.fills[report.fill_index]
+            indexes.inventory += fill.side == Buy ? fill.qty_lots : -fill.qty_lots
+            indexes.cash += state.fill_cash_flows[report.fill_index]
+            indexes.reported_lots[fill.order_id] += fill.qty_lots
+        else
+            _unlink!(indexes.visible, report.terminal_id)
+        end
+        indexes.report_cursor += 1
+    end
+    if indexes.report_cursor > 1024 && indexes.report_cursor > length(indexes.reports) ÷ 2
+        deleteat!(indexes.reports, 1:(indexes.report_cursor - 1))
+        indexes.report_cursor = 1
     end
     views = OpenOrderView[]
-    for order in state.orders
-        # Every terminal state, including rejections, becomes visible only after
-        # report_ns. Activation-time rejects (post-only) depend on the venue book at
-        # activation, and decision-time risk rejects can depend on fills that are not
-        # reported yet, so neither may disappear from the view early.
-        if order.terminal_ts_ns !== nothing && _checked_time(order.terminal_ts_ns, report_ns) <= ts
-            continue
-        end
-        reported = sum(
-            (
-                state.fills[i].qty_lots for
-                i in get(state.fills_by_order, order.order_id, Int[]) if
-                state.fills[i].report_ts_ns <= ts
-            );
-            init = Int64(0),
-        )
+    id = indexes.visible.head
+    while id != 0
+        order = state.orders[id]
         push!(
             views,
             OpenOrderView(
@@ -743,11 +773,12 @@ function _reported_view(state::_SimState, ts::Int64)
                 order.intent.side,
                 order.intent.limit_price_ticks,
                 order.intent.qty_lots,
-                reported,
+                indexes.reported_lots[id],
             ),
         )
+        id = indexes.visible.next[id]
     end
-    return inventory, cash, views
+    return indexes.inventory, indexes.cash, views
 end
 
 function _normalize_intents(output)
@@ -789,11 +820,15 @@ function _submit!(state::_SimState, ctx::DecisionContext, decision_id::Int64, in
         nothing,
     )
     push!(state.orders, order)
+    _index_order!(state.indexes, order_id)
     if reason === nothing
+        state.indexes.live_count += 1
+        _change_live!(state, order, Int64(0), order.remaining_lots)
         _schedule!(state, activation, _RANK_ACTIVATION, order_id)
     else
         order.terminal_ts_ns = decision_ts
         order.terminal_reason = reason
+        _queue_terminal!(state, order)
         record_non_fill!(
             state.portfolio,
             :reject,
@@ -1080,8 +1115,6 @@ function simulate!(
     state = _SimState(
         config,
         working,
-        working.cash_subunits,
-        working.inventory_lots,
         OrderBookState(session.venue, session.instrument),
         OrderBookState(session.venue, session.instrument),
         Dict{Tuple{BookSide, Int64}, Int64}(),
@@ -1101,6 +1134,7 @@ function simulate!(
         working.simulation_runs,
         0,
         Dict{Tuple{BookSide, Int64}, Int64}(),
+        _SimIndexes(working.cash_subunits, working.inventory_lots),
     )
 
     last_venue_ts = last(events).exchange_ts_ns

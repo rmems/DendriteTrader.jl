@@ -71,21 +71,25 @@ patterns; fix them only in a scoped change with tests.
 
 ## Verified commands
 
-Run from the repository root. Verified on a fresh shallow clone at commit `9d1cb2e`
-(Julia 1.13.2, Linux, CPU only).
+Run from the repository root. Verified on a clean checkout of commit `4a57690` plus this
+docs-only diff (Julia 1.10.11, Linux, CPU only). CI uses Julia 1.13 per `ci.yml`.
 
-| Purpose | Command | Status at `9d1cb2e` |
+| Purpose | Command | Status at `4a57690` |
 |---------|---------|---------------------|
-| Full test suite | `julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'` | Passes: 571 pass, 0 fail, 0 error, 0 broken (~250 s cold, mostly precompilation) |
-| Fast test loop | `julia --startup-file=no --project=. test/runtests.jl` | Passes (~28 s warm) |
-| Docs build | `julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'` then `julia --project=docs docs/make.jl` | Builds. The first command rewrites `docs/Project.toml` with a local path source; do not commit that |
-| Format (non-mutating) | `julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.add(name="JuliaFormatter", version="2"); using JuliaFormatter; exit(format("."; overwrite=false) ? 0 : 1)'` | Passes (exit 0) after #107, which reformatted `src/features/Labels.jl`, `src/market/Replay.jl`, `test/leakage.jl`; at `9d1cb2e` it failed on those three. Same check the CI `JuliaFormatter` job runs |
+| Full test suite | `julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'` | Passes (`Testing DendriteTrader tests passed`): root `DendriteTrader` testset 531/531; `Paper simulation (RM-1864)` 23159 pass + 1 expected `@test_broken`; `walk_forward_splits leakage` 7 pass + 2 expected `@test_broken` (~4 min cold including precompilation) |
+| Fast test loop | `julia --startup-file=no --project=. test/runtests.jl` | Passes (~2 min warm) |
+| Docs build | `DOCUMENTER_TEST=true julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'` then `DOCUMENTER_TEST=true julia --project=docs docs/make.jl` | Builds. The first command rewrites `docs/Project.toml` with a local path source; do not commit that |
+| Format (non-mutating) | `julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.add(name="JuliaFormatter", version="2"); using JuliaFormatter; exit(format("."; overwrite=false) ? 0 : 1)'` | Passes (exit 0; JuliaFormatter 2.14.12). Same check the CI `JuliaFormatter` job runs |
 
 Notes:
 
 - The dYdX integration testset in `test/integration/test_dydx.jl` is included by
   `test/runtests.jl` but returns early (0 tests) unless `DYDX_INTEGRATION=true`. It calls
   the public dYdX v4 testnet indexer. Do not enable it casually.
+- Expected `@test_broken` tests at `4a57690`: two event-overlap assertions in
+  `test/leakage_splits_labels.jl` (`label_violations`, `lookback_violations`) and one
+  zero-latency legacy-backtester assertion in `test/simulation.jl`
+  (`closed.entry_time > signals[2].timestamp_ns`).
 - CI (`ci.yml` `JuliaFormatter` job) and `AGENTS.md` run the non-mutating check above, pinned
   to JuliaFormatter 2.x in a temporary environment, so `Project.toml` is not modified. Do not
   use `format(".", check=true)`: JuliaFormatter 2.x ignores `check`, reformats in place and exits 0.
@@ -115,6 +119,16 @@ Notes:
 | `docs/src/` | Documenter pages; `experiments.md` is the research spec and scientific requirements |
 | `docs/superpowers/plans/2026-09-20-snn-hft-experiments.md` | Implementation plan. Tasks 1-5 done (Task 5 is the paper simulator in `src/simulation/`); Tasks 6-7 (artifacts/manifest, shadow feed) not started |
 
+## Gotchas
+
+- Never run `Pkg.register` or any other registry or publish command.
+- `.claude/` is **not** gitignored (`.codex/`, `.cursor/`, `.kilo/`, `.mimo/`, `.mimocode/`, and
+  `.beads/` are). Do not commit local agent state under `.claude/`.
+- CI runs Julia **1.13** (`ci.yml`, `docs.yml`, `integration.yml`); `[compat] julia = "1.10"`.
+- `Project.toml` lists `JuliaFormatter` under `[extras]` but not `[targets]`, so it is not a test
+  dependency. Use the temp-env format check above, not `Pkg.test()` deps.
+- SPDX headers are required on every new source file, including `test/` and `docs/make.jl`.
+
 ## Working rules for Claude
 
 - Add or extend a test in the matching `test/*.jl` file for every behavior change. For
@@ -122,5 +136,6 @@ Notes:
   look-ahead test to `test/leakage.jl` or the relevant file.
 - `Forecast.probabilities` are class probabilities, not calibrated win probabilities. Do
   not pass them straight into Kelly sizing.
-- Keep the SPDX header on every new source file and update `CHANGELOG.md`.
+- Keep the SPDX header on every new source file (including under `test/` and `docs/make.jl`) and
+  update `CHANGELOG.md`.
 - Read `REVIEW.md` before touching shared mutable state.

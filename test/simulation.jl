@@ -256,6 +256,104 @@ function _random_queue_case(seed::Integer; steps::Integer = 24, stale_feed::Bool
 end
 
 @testset "Paper simulation (RM-1864)" begin
+    @testset "Incremental queues survive partial fills, middle/head cancels and rejoin" begin
+        events = vcat(
+            _base_events(),
+            MarketEvent[
+                _bd(3, 120, Bid, 90, 1),
+                _tp(4, 130, Sell, 101, 2),
+                _bd(5, 140, Bid, 90, 1),
+                _tp(6, 150, Sell, 101, 8),
+                _bd(7, 160, Bid, 90, 1),
+                _tp(8, 170, Sell, 101, 2),
+            ],
+        )
+        actions = Dict{Int, Any}(
+            2 => [OrderIntent(Buy, 3, 101) for _ in 1:3],
+            3 => CancelIntent(2),
+            4 => OrderIntent(Buy, 3, 101),
+            5 => CancelIntent(1),
+            7 => OrderIntent(Buy, 2, 101),
+        )
+        result =
+            simulate!(_portfolio(), _session(events), _at_sequence(actions); config = _config(1))
+        @test [o.initial_queue_ahead_lots for o in result.orders] == [0, 3, 6, 4, 0]
+        @test [o.filled_lots for o in result.orders] == [2, 0, 3, 3, 2]
+        @test [o.status for o in result.orders] == [:cancelled, :cancelled, :filled, :filled, :filled]
+        @test isempty(reconciliation_errors(result))
+    end
+
+    @testset "Leakage: incremental reports match the history-scan definition" begin
+        # More than 1024 reports exercises queue compaction. At report_ns=9 each
+        # activation's fill/terminal report coincides exactly with the next decision.
+        for report_ns in (0, 9, 25), feed in (ReceiveTimestampFeed(), FixedFeedDelay(7))
+            events = vcat(
+                MarketEvent[_bd(1, 100, Bid, 100, 10), _bd(2, 100, Ask, 102, 10_000)],
+                MarketEvent[_bd(i, 100 + 10(i - 2), Bid, 90, 1) for i in 3:1150],
+            )
+            seen = Any[]
+            decide =
+                ctx -> begin
+                    push!(
+                        seen,
+                        (
+                            ctx.decision_ts_ns,
+                            ctx.reported_inventory_lots,
+                            ctx.reported_cash_subunits,
+                            copy(ctx.open_orders),
+                        ),
+                    )
+                    # Mutating a view vector must not mutate the simulator's index.
+                    empty!(ctx.open_orders)
+                    ctx.info_sequence == 1 && return nothing
+                    ctx.info_sequence == 2 && return [
+                        OrderIntent(Buy, 3, 101),
+                        OrderIntent(Sell, 1, 100), # decision-time rejection
+                        OrderIntent(Buy, 1, 102; post_only = true), # activation rejection
+                    ]
+                    ctx.info_sequence == 3 && return [CancelIntent(1), CancelIntent(1)]
+                    return OrderIntent(Buy, 2, 102; time_in_force = :ioc)
+                end
+            result = simulate!(
+                _portfolio(cash = 1_000_000),
+                _session(events),
+                decide;
+                config = SimulationConfig(
+                    latency = FixedLatency(1; cancel_ns = 2, report_ns),
+                    feed = feed,
+                    fees = FeeSchedule(taker_fee_ppm = 123, per_fill_fee_subunits = 1),
+                ),
+            )
+            for (decision, (ts, inventory, cash, views)) in enumerate(seen)
+                reported = [f for f in result.fills if f.report_ts_ns <= ts]
+                expected_inventory =
+                    sum((f.side == Buy ? f.qty_lots : -f.qty_lots for f in reported); init = 0)
+                expected_cash =
+                    1_000_000 + sum(
+                        (
+                            f.side == Buy ? -(f.price_ticks * f.qty_lots + f.fee_subunits) :
+                            f.price_ticks * f.qty_lots - f.fee_subunits for f in reported
+                        );
+                        init = 0,
+                    )
+                expected_views = [
+                    OpenOrderView(
+                        o.order_id,
+                        o.intent.side,
+                        o.intent.limit_price_ticks,
+                        o.intent.qty_lots,
+                        sum((f.qty_lots for f in reported if f.order_id == o.order_id); init = 0),
+                    ) for o in result.orders if o.decision_id < decision &&
+                        (o.terminal_ts_ns === nothing || o.terminal_ts_ns + report_ns > ts)
+                ]
+                @test inventory == expected_inventory
+                @test cash == expected_cash
+                @test views == expected_views
+            end
+            @test isempty(reconciliation_errors(result))
+        end
+    end
+
     @testset "Contracts validate inputs" begin
         @test_throws ArgumentError OrderIntent(Neutral, 1, 100)
         @test_throws ArgumentError OrderIntent(Buy, 0, 100)

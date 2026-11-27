@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- `CLAUDE.md`: deduplicate agent gotchas and re-verify commands at `4a57690` (RM-2194).
+
+### Performance
+
+- **Paper simulation replays with incremental indexes instead of per-event rescans**
+  (RM-2236). The simulator now maintains per-level FIFO queues of resting orders,
+  Fenwick sums of same-level lots ahead (own-ahead), a report-time queue of fills and
+  terminal states with running reported inventory/cash, and running live-order counts,
+  lots and buy cash reservations. Previously each replayed event re-filtered and
+  re-sorted every order, and each decision re-walked every fill, so cost grew as
+  O(events x (orders + fills)).
+
+  Behaviour is unchanged by construction and by test: the fill model, queue-position
+  assumptions, report-latency visibility, risk rejections and `result_hash` are all
+  identical. The Leakage 1-11 testsets, the randomized price-time FIFO oracle in all
+  four modes (no over-fills) and the vendored `parity.v1` fixtures pass, and
+  `result_hash` was compared byte-for-byte across 972 runs spanning the randomized
+  oracle sessions (two queue modes, stale and prompt feeds, two latency profiles) and
+  the `book_session.jsonl` fixture under a reactive policy.
+
+  Measured with `benchmark/simulation.jl` (new; 4098 events, fastest of 7 samples,
+  one row per process, Julia 1.13, 4-vCPU container), events/s against the number of
+  resting orders at one price level:
+
+  | Resting orders | Trade prints at that level | Deltas elsewhere |
+  |---------------:|---------------------------:|-----------------:|
+  | 64             | 11,998 -> 18,337 (1.5x)    | 23,934 -> 28,117 (1.2x) |
+  | 256            | 3,357 -> 10,866 (3.2x)     | 14,535 -> 30,843 (2.1x) |
+  | 1024           | 218 -> 3,847 (17.7x)       | 7,455 -> 11,070 (1.5x)  |
+
+  Paper trading only; no change to the fill model or to `metabolic-ledger` parity.
+
 ### Changed (breaking: sizing rejects invalid inputs instead of clamping)
 
 Research invariant 7: unsupported or invalid sizes and prices are rejected with an
@@ -107,6 +141,7 @@ eight-argument form is kept); `DEFAULT_MAX_POSITION_FRACTION` is a new export; a
 
 ### Changed
 
+- Docs home badges, install URL, and license link use `rmems/DendriteTrader.jl`. The `0.1.0` release link uses that repository as well.
 - **CI format gate**: the `JuliaFormatter` CI job now actually fails on unformatted code. It previously ran `format(".", check=true)`, which JuliaFormatter 2.x ignores (it reformatted in place and exited 0). The job now installs JuliaFormatter `2.x` into a temporary environment and exits 1 when `format("."; overwrite=false)` returns `false`. `AGENTS.md` documents the same command. `src/features/Labels.jl`, `src/market/Replay.jl` and `test/leakage.jl` were reformatted (layout only, parsed ASTs unchanged).
 - License: switched from GPL-3.0-only to dual MIT OR Apache-2.0.
   - Added `LICENSE-MIT` and `LICENSE-APACHE-2.0`.
@@ -127,4 +162,4 @@ See issues #10 and #11.
 - **dYdX v4 REST client**: REST API client for dYdX v4 decentralized exchange integration.
 - **Paper position tracking**: Simulated position tracking for paper trading without live execution.
 
-[0.1.0]: https://github.com/Limen-Neural/DendriteTrader.jl/releases/tag/v0.1.0
+[0.1.0]: https://github.com/rmems/DendriteTrader.jl/releases/tag/v0.1.0
