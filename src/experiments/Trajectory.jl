@@ -154,16 +154,19 @@ end
 # ── Outcome labeling ─────────────────────────────────────────────────────────
 
 # Shared per-run scan products for outcome labeling: suffix min/max of equity and
-# suffix max of drawdown (built once, so a `session_end` horizon costs O(1) per
-# call instead of re-copying the remaining ledger), each fill mapped to the ledger
-# step that applied it (so outcome windows bound by step, not by timestamp — two
-# steps can share a timestamp and an activation fill must not leak into an earlier
-# venue step at the same ns), and orders grouped by decision.
+# suffix max drawdown measured from a peak **inside** the window (built once, so a
+# `session_end` horizon costs O(1) per call instead of re-copying the remaining
+# ledger), each fill mapped to the ledger step that applied it (so outcome windows
+# bound by step, not by timestamp — two steps can share a timestamp and an
+# activation fill must not leak into an earlier venue step at the same ns), and
+# orders grouped by decision. Drawdown is window-internal: the ledger's own
+# drawdown is measured from the run-global peak, which would count losses that
+# happened before the decision into its horizon.
 struct _OutcomeView
     ledger::Vector{LedgerPoint}
     suffix_min_equity::Vector{Int64}
     suffix_max_equity::Vector{Int64}
-    suffix_max_drawdown::Vector{Int64}
+    suffix_window_drawdown::Vector{Int64}
     suffix_equity_count::Vector{Int64}
     fills_by_decision::Dict{Int64, Vector{Tuple{Fill, Int64}}}
     orders_by_decision::Dict{Int64, Vector{PaperOrder}}
@@ -200,18 +203,24 @@ function _outcome_view(ledger, fills, orders, realized_by_fill)
     suffix_max = Vector{Int64}(undef, n)
     suffix_dd = Vector{Int64}(undef, n)
     suffix_count = Vector{Int64}(undef, n)
-    min_equity, max_equity, max_dd, count = typemax(Int64), typemin(Int64), Int64(0), Int64(0)
+    min_equity, max_equity = typemax(Int64), typemin(Int64)
+    window_dd, count, min_after = Int64(0), Int64(0), typemax(Int64)
     for index in n:-1:1
         equity = ledger[index].equity_subunits
+        # Pairs introduced at this index give drawdown e_index - min_{j>index} e_j;
+        # combined with the suffix below it this is the max drawdown inside [index, n].
+        if equity !== nothing && min_after != typemax(Int64)
+            window_dd = max(window_dd, equity - min_after)
+        end
+        suffix_dd[index] = window_dd
         if equity !== nothing
+            min_after = min(min_after, equity)
             min_equity = min(min_equity, equity)
             max_equity = max(max_equity, equity)
             count += 1
         end
-        max_dd = max(max_dd, ledger[index].drawdown_subunits)
         suffix_min[index] = min_equity
         suffix_max[index] = max_equity
-        suffix_dd[index] = max_dd
         suffix_count[index] = count
     end
     return _OutcomeView(
@@ -277,19 +286,21 @@ function _window_extremes(view::_OutcomeView, decision_step::Int, end_index::Int
         return (
             view.suffix_min_equity[decision_step],
             view.suffix_max_equity[decision_step],
-            view.suffix_max_drawdown[decision_step],
+            view.suffix_window_drawdown[decision_step],
             view.suffix_equity_count[decision_step],
         )
     end
-    min_equity, max_equity, max_dd, count = typemax(Int64), typemin(Int64), Int64(0), 0
+    min_equity, max_equity = typemax(Int64), typemin(Int64)
+    runmax, max_dd, count = typemin(Int64), Int64(0), 0
     for index in decision_step:end_index
         equity = ledger[index].equity_subunits
         if equity !== nothing
+            runmax = max(runmax, equity)
+            max_dd = max(max_dd, runmax - equity)
             min_equity = min(min_equity, equity)
             max_equity = max(max_equity, equity)
             count += 1
         end
-        max_dd = max(max_dd, ledger[index].drawdown_subunits)
     end
     return (min_equity, max_equity, max_dd, count)
 end
