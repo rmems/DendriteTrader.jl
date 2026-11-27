@@ -54,8 +54,7 @@ Kelly-sized commitment, so it never rejects one Kelly-sized entry from flat and
 boundary rounding cannot flip that decision. It does bind when same-side entries
 accumulate in one ticker (a third Kelly buy at confidence `0.92`, about `0.433` each,
 projects about `1.3` and is rejected). It is per ticker, not a portfolio-wide leverage
-limit: use `max_portfolio_exposure` to bound total gross notional (note #111: that cap
-can currently reject a reducing order after a price rise). A relative cap at or below `0.5` (such as `0.25`) rejects ordinary
+limit: use `max_portfolio_exposure` to bound total gross notional. Reduce-only orders (no increase, no side flip) are exempt from that portfolio cap, so a price rise cannot trap a reduction (#111). A relative cap at or below `0.5` (such as `0.25`) rejects ordinary
 high-confidence entries. Orders that only reduce an existing position (opposite side, at most
 the position size) are exempt from the relative cap, because price and balance drift
 after entry. A sell larger than a long position is a flip and is checked. The absolute cap
