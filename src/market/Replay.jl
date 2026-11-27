@@ -124,24 +124,22 @@ function _decode_event(record::AbstractDict)
 end
 
 """Load a non-empty, single-instrument `ReplaySession` from newline-delimited JSON."""
-function load_session_jsonl(path::AbstractString; policy::ReplayPolicy = ReplayPolicy())
+function load_session_jsonl(io::IO; policy::ReplayPolicy = ReplayPolicy())
     events = MarketEvent[]
-    open(path, "r") do io
-        for (line_number, line) in enumerate(eachline(io))
-            isempty(strip(line)) && continue
-            try
-                record = JSON.parse(line)
-                record isa AbstractDict || throw(ArgumentError("event must be a JSON object"))
-                push!(events, _decode_event(record))
-            catch error
-                error isa InterruptException && rethrow()
-                throw(
-                    ArgumentError(
-                        "invalid event at line $line_number: $(sprint(showerror, error))",
-                    ),
-                )
-            end
+    for (line_number, line) in enumerate(eachline(io))
+        isempty(strip(line)) && continue
+        try
+            record = JSON.parse(line)
+            record isa AbstractDict || throw(ArgumentError("event must be a JSON object"))
+            push!(events, _decode_event(record))
+        catch error
+            error isa InterruptException && rethrow()
+            throw(ArgumentError("invalid event at line $line_number: $(sprint(showerror, error))"))
         end
     end
     return ReplaySession(events; policy = policy)
+end
+
+function load_session_jsonl(path::AbstractString; policy::ReplayPolicy = ReplayPolicy())
+    return open(io -> load_session_jsonl(io; policy = policy), path, "r")
 end

@@ -104,6 +104,7 @@ function normalization_parameters(normalizer::RollingZScore)
     return Dict(
         "feature_names" => collect(FEATURE_NAMES),
         "means" => collect(normalizer.means),
+        "mean_corrections" => collect(normalizer.mean_corrections),
         "scales" => collect(normalizer.scales),
         "fitted_through_sequence" => normalizer.fitted_through_sequence,
     )

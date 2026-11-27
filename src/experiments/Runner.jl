@@ -67,8 +67,16 @@ function _build_model(config::ExperimentConfig)
     throw(ArgumentError("unknown model $(config.model)"))
 end
 
+# Events between split ranges are embargo; events past the test range are not part
+# of any split and are tagged `:unused` rather than mislabeled as embargo.
 function _phase_tags(split::ChronologicalSplit, n::Int)
-    phase = fill(:embargo, n)
+    phase = fill(:unused, n)
+    for index in (last(split.train) + 1):(first(split.validation) - 1)
+        phase[index] = :embargo
+    end
+    for index in (last(split.validation) + 1):(first(split.test) - 1)
+        phase[index] = :embargo
+    end
     for index in split.train
         phase[index] = :train
     end
@@ -98,16 +106,37 @@ function _git(args...)
     end
 end
 
+# Dependency pins come from the package's own Manifest.toml when present (it is
+# gitignored, so a repo without one reports `nothing` rather than failing).
+function _dependency_provenance()
+    manifest_path = joinpath(dirname(@__DIR__), "Manifest.toml")
+    isfile(manifest_path) || return (nothing, nothing)
+    manifest_sha = bytes2hex(sha256(read(manifest_path)))
+    deps = try
+        parsed = TOML.parsefile(manifest_path)
+        Dict{String, Any}(
+            name => get(first(entries), "version", nothing) for
+            (name, entries) in get(parsed, "deps", Dict{String, Any}())
+        )
+    catch
+        nothing
+    end
+    return (deps, manifest_sha)
+end
+
 function _code_provenance()
     commit = _git("rev-parse", "HEAD")
     dirty = _git("status", "--porcelain")
     version = Base.pkgversion(parentmodule(@__MODULE__))
+    deps, manifest_sha = _dependency_provenance()
     return Dict{String, Any}(
         "julia_version" => string(VERSION),
         "package" => "DendriteTrader",
         "package_version" => version === nothing ? nothing : string(version),
         "git_commit" => commit === nothing || isempty(commit) ? nothing : commit,
         "git_dirty" => dirty === nothing ? nothing : !isempty(dirty),
+        "dependencies" => deps,
+        "manifest_toml_sha256" => manifest_sha,
         "os" => String(Sys.KERNEL),
         "arch" => String(Sys.ARCH),
         "julia_threads" => Threads.nthreads(),
@@ -164,10 +193,11 @@ end
 
 Run one declared experiment end to end:
 
-1. Hash and load the replay session (`data.sha256` pins it when present).
+1. Hash and load the replay session; `data.sha256` pins the exact bytes parsed.
 2. Build the chronological train/embargo/validation/embargo/test split over event
-   positions; `evaluate_on` selects where the policy may act (`test`,
-   `validation_test`, or `all`). Decisions are never taken on train/embargo rows.
+   positions; `evaluate_on` selects where the policy may act: `test`,
+   `validation_test`, or `all` — `all` lets it act on every event including train
+   and embargo (an in-sample/widened diagnostic, never the default).
 3. Fit the optional baseline model on **train** snapshots/labels only and the
    `RollingZScore` on train feature rows only — validation and test rows are never
    visible to either fit (CLAUDE.md rule 5).
@@ -175,6 +205,11 @@ Run one declared experiment end to end:
    is recorded on every call; intents are only forwarded on evaluation sequences.
 5. Emit the trajectory / prediction / SNN rows and the manifest. `run_id` and
    `core_hash` cover the config, dataset and output hashes only — never wall-clock.
+
+Outcome labels are deliberately forward-looking — that is their purpose as a
+supervised dataset — so a row's `outcome` reflects run events after its phase
+boundary. Consumers building train-only sets must honor each row's `phase` tag
+(and ignore `:unused` rows past the test split).
 
 `policy.name = "external"` requires `decide`; `signal` is an optional callable
 `ctx -> Union{Nothing, AbstractDict}` recorded next to every call. Built-in
@@ -190,8 +225,10 @@ function run_experiment(config::ExperimentConfig; decide = nothing, signal = not
             ),
         )
     end
+    # Parse the same bytes the SHA-256 pin verified; reloading by path could pick
+    # up a file swapped between hashing and parsing.
     session = load_session_jsonl(
-        config.session_path;
+        IOBuffer(raw);
         policy = ReplayPolicy(; allow_sequence_gaps = config.allow_sequence_gaps),
     )
     events = session.events
@@ -265,7 +302,7 @@ function run_experiment(config::ExperimentConfig; decide = nothing, signal = not
                     "`signal` must return nothing or an AbstractDict, got $(typeof(value))",
                 ),
             )
-            return Dict{String, Any}(String(k) => v for (k, v) in value)
+            return deepcopy(Dict{String, Any}(String(k) => v for (k, v) in value))
         end
     else
         ctx -> nothing
@@ -357,6 +394,7 @@ function run_experiment(config::ExperimentConfig; decide = nothing, signal = not
     realized_by_fill = Dict{String, Int64}(
         row.fill_id => row.realized_pnl_delta for row in result.audit if row.fill_id !== nothing
     )
+    view = _outcome_view(result.ledger, result.fills, result.orders, realized_by_fill)
     placeholder_run_id = "run-pending"
     trajectories = Dict{String, Any}[]
     predictions = Dict{String, Any}[]
@@ -371,10 +409,7 @@ function run_experiment(config::ExperimentConfig; decide = nothing, signal = not
                 call,
                 call_phase,
                 records,
-                result.fills,
-                realized_by_fill,
-                result.ledger,
-                result.scale,
+                view,
                 config.horizons,
                 step,
                 placeholder_run_id,
@@ -387,10 +422,7 @@ function run_experiment(config::ExperimentConfig; decide = nothing, signal = not
                 call,
                 call_phase,
                 records,
-                result.fills,
-                realized_by_fill,
-                result.ledger,
-                result.scale,
+                view,
                 config.horizons,
                 step,
                 normalizer,
@@ -424,7 +456,9 @@ function run_experiment(config::ExperimentConfig; decide = nothing, signal = not
     for row in snn
         row["run_id"] = run_id
     end
-    trajectory_sha = bytes2hex(sha256(join((_canon(r) for r in trajectories), "\n")))
+    # Hash exactly the bytes `write_artifacts` puts in trajectory.jsonl (the JSONL
+    # payload, trailing newline included) so the manifest verifies the file.
+    trajectory_sha = bytes2hex(sha256(_jsonl(trajectories)))
 
     metrics = _experiment_metrics(config, result, calls, trajectories, phase, eval_set, run_id)
     manifest = _experiment_manifest(
@@ -571,7 +605,7 @@ function _experiment_manifest(
             "embargo" => split.embargo,
             "evaluate_on" => String(config.evaluate_on),
             "eval_sequences" => sort!(collect(eval_set)),
-            "note" => "indices are event positions; evaluation never touches train, embargo or validation rows unless evaluate_on widens it",
+            "note" => "indices are event positions; evaluate_on = \"all\" lets the policy act on train, embargo and validation rows as an in-sample diagnostic, and events past the test range are tagged \"unused\"",
         ),
         "normalization" => normalization,
         "model" => model_dict,

@@ -218,19 +218,31 @@ end to end: it loads and hashes the replay session, builds a chronological
 train/embargo/validation/embargo/test split over event positions, fits the declared
 baseline model and the `RollingZScore` on **train rows only**, drives `simulate!`
 with a wrapped decision function that may only act on the `evaluate_on` phase, and
-emits the issue #76 trajectory export. `write_artifacts` writes the artifact set
-atomically: `manifest.json`, `metrics.json`, `predictions.jsonl`,
-`trajectory.jsonl`, `snn_trajectory.jsonl`, `normalization.json` and `summary.md`.
+emits the issue #76 trajectory export. `evaluate_on` is `test`, `validation_test`,
+or `all`; `all` lets the policy act on train and embargo rows too — an in-sample
+diagnostic, not the held-out evaluation default. Events past the test range are
+phase-tagged `unused` when the declared sizes do not cover the session.
+`write_artifacts` writes the artifact set: `manifest.json`, `metrics.json`,
+`predictions.jsonl`, `trajectory.jsonl`, `snn_trajectory.jsonl`,
+`normalization.json` and `summary.md`. Each file is written atomically (unique
+temp file then rename) and the manifest — which records the SHA-256 of every other
+artifact — is written last, so a manifest whose hashes match the files on disk
+marks a complete set.
 
 Each `trajectory.jsonl` row is a `paper_trajectory_step` preserving
 `market state -> signal -> decision -> paper action -> outcome`: the observed book
 and causal feature row, the forecast or external signal, every intent with its
 accept/reject record, the reported account state, and per-horizon outcomes
-(`events`, `wall_ns`, `close`, `session_end`) carrying paper PnL, return, drawdown
-contribution and MAE/MFE in integer subunits. Rejected decisions appear without
+(`events`, `wall_ns`, `close`, `session_end`) carrying paper PnL in integer
+subunits, return in parts-per-million of entry equity, window maximum drawdown,
+and MAE/MFE in integer subunits. Rejected decisions — including orders the venue
+refused at activation — appear as `rejected` / `rejected_at_activation` without
 fabricated PnL. `snn_trajectory.jsonl` is the compact supervisor-training view:
 phase, train-normalized features, the signal, the decision target and per-horizon
-paper PnL. The manifest records code provenance, dataset and result hashes, seeds,
+paper PnL. Outcome labels are forward-looking by design — a row's `outcome`
+reflects run events after its phase boundary — so consumers building train-only
+sets must honor the `phase` tag. The manifest records code provenance (including
+resolved dependency versions), dataset and result hashes, seeds,
 split boundaries, normalization parameters, assumptions and diagnostic flags
 (zero-latency, zero-cost); `run_id` and `core_hash` cover only the deterministic
 core. `scripts/run_experiment.jl` is the CLI;

@@ -62,8 +62,10 @@ One contiguous split over indices `1:n`: train on the earliest `train_size`
 observations, validation on the next `validation_size`, and the final `test_size`
 held out last, with an `embargo`-index gap between neighbouring ranges. Indices are
 observation positions (for market sequences, event positions), never random
-adjacent-row draws. Returns the single `ChronologicalSplit` contract; the ranges
-and embargo are self-validating.
+adjacent-row draws. When the declared sizes plus embargo gaps do not cover `n`,
+the trailing observations past the test range are unused — they belong to no
+split. Returns the single `ChronologicalSplit` contract; the ranges and embargo
+are self-validating.
 """
 function chronological_split(
     n::Integer;

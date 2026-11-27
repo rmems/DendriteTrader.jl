@@ -16,7 +16,9 @@ const ARTIFACT_FILES = (
 )
 
 function _write_atomic(path::AbstractString, contents::AbstractString)
-    temporary = path * ".tmp"
+    # A unique temp name on the same filesystem keeps a rename atomic and avoids
+    # collisions between concurrent writers to the same directory.
+    temporary = tempname(dirname(abspath(path)))
     write(temporary, contents)
     mv(temporary, path; force = true)
     return nothing
@@ -146,9 +148,10 @@ end
 
 Write the Task 6 artifact set under `dir` (created if needed): `manifest.json`,
 `metrics.json`, `predictions.jsonl`, `trajectory.jsonl`, `snn_trajectory.jsonl`,
-`normalization.json` and `summary.md`. Every write is atomic (temp file then
-rename); the manifest records the SHA-256 of each other artifact under
-`"artifacts"` before it is itself written. Returns the written paths.
+`normalization.json` and `summary.md`. Each file write is atomic (unique temp file
+then rename) and `manifest.json` — which records the SHA-256 of every other
+artifact under `"artifacts"` — is written last, so a manifest whose hashes match
+the files on disk marks a complete set. Returns the written paths.
 """
 function write_artifacts(result::ExperimentResult, dir::AbstractString)
     mkpath(dir)
@@ -168,9 +171,12 @@ function write_artifacts(result::ExperimentResult, dir::AbstractString)
     end
     artifact_hashes =
         Dict{String, Any}(name => bytes2hex(sha256(payload)) for (name, payload) in payloads)
-    result.manifest["artifacts"] = artifact_hashes
+    # Write a copy so repeated calls recompute hashes instead of mutating the
+    # result the caller may still hold.
+    manifest = copy(result.manifest)
+    manifest["artifacts"] = artifact_hashes
     manifest_path = joinpath(dir, "manifest.json")
-    _write_atomic(manifest_path, _canon(result.manifest) * "\n")
+    _write_atomic(manifest_path, _canon(manifest) * "\n")
     written["manifest.json"] = manifest_path
     return [written[name] for name in ARTIFACT_FILES]
 end

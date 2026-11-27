@@ -88,34 +88,34 @@ function _intent_dicts(call::TrajectoryCall, records)
     for intent in call.intents
         if intent isa OrderIntent
             submit_index += 1
-            record = submits[submit_index]
+            record = submit_index <= length(submits) ? submits[submit_index] : nothing
             push!(
                 dicts,
                 Dict{String, Any}(
                     "action" => "submit",
-                    "order_id" => record.order_id,
+                    "order_id" => record === nothing ? nothing : record.order_id,
                     "side" => lowercase(string(intent.side)),
                     "qty_lots" => intent.qty_lots,
                     "limit_price_ticks" => intent.limit_price_ticks,
                     "time_in_force" => String(intent.time_in_force),
                     "post_only" => intent.post_only,
                     "tag" => intent.tag,
-                    "accepted" => record.accepted,
-                    "reason" => record.reason,
-                    "effective_ts_ns" => record.effective_ts_ns,
+                    "accepted" => record === nothing ? false : record.accepted,
+                    "reason" => record === nothing ? "no_decision_record" : record.reason,
+                    "effective_ts_ns" => record === nothing ? nothing : record.effective_ts_ns,
                 ),
             )
         else
             cancel_index += 1
-            record = cancels[cancel_index]
+            record = cancel_index <= length(cancels) ? cancels[cancel_index] : nothing
             push!(
                 dicts,
                 Dict{String, Any}(
                     "action" => "cancel",
-                    "order_id" => record.order_id,
-                    "accepted" => record.accepted,
-                    "reason" => record.reason,
-                    "effective_ts_ns" => record.effective_ts_ns,
+                    "order_id" => record === nothing ? nothing : record.order_id,
+                    "accepted" => record === nothing ? false : record.accepted,
+                    "reason" => record === nothing ? "no_decision_record" : record.reason,
+                    "effective_ts_ns" => record === nothing ? nothing : record.effective_ts_ns,
                 ),
             )
         end
@@ -130,17 +130,107 @@ function _decision_action(call::TrajectoryCall)
     return "mixed"
 end
 
-function _decision_status(call::TrajectoryCall, records, fills)
+# Orders the venue refused after acceptance: post-only rejections and sweeps that
+# could take nothing within the limit. They never traded, so they count as
+# rejections for outcome purposes (no PnL is attributable).
+_venue_rejected(order::PaperOrder) =
+    order.status == :rejected || (
+        order.status == :cancelled &&
+        order.filled_lots == 0 &&
+        order.terminal_reason == "cross_unfillable_after_slippage"
+    )
+
+function _decision_status(call::TrajectoryCall, records, fills, orders)
     intents = _decision_action(call)
     intents == "none" && return "none"
     intents == "cancel" && return "cancel_request"
+    isempty(fills) || return "executed"
     submits = [r for r in records if r.action == :submit]
     !isempty(submits) && all(r -> !r.accepted, submits) && return "rejected"
-    isempty(fills) || return "executed"
+    !isempty(orders) && all(_venue_rejected, orders) && return "rejected_at_activation"
     return "no_fill"
 end
 
 # ── Outcome labeling ─────────────────────────────────────────────────────────
+
+# Shared per-run scan products for outcome labeling: suffix min/max of equity and
+# suffix max of drawdown (built once, so a `session_end` horizon costs O(1) per
+# call instead of re-copying the remaining ledger), each fill mapped to the ledger
+# step that applied it (so outcome windows bound by step, not by timestamp — two
+# steps can share a timestamp and an activation fill must not leak into an earlier
+# venue step at the same ns), and orders grouped by decision.
+struct _OutcomeView
+    ledger::Vector{LedgerPoint}
+    suffix_min_equity::Vector{Int64}
+    suffix_max_equity::Vector{Int64}
+    suffix_max_drawdown::Vector{Int64}
+    suffix_equity_count::Vector{Int64}
+    fills_by_decision::Dict{Int64, Vector{Tuple{Fill, Int64}}}
+    orders_by_decision::Dict{Int64, Vector{PaperOrder}}
+    realized_by_fill::Dict{String, Int64}
+end
+
+function _outcome_view(ledger, fills, orders, realized_by_fill)
+    venue_step = Dict{Int64, Int64}()
+    activation_step = Dict{Int64, Int64}()
+    for (index, point) in enumerate(ledger)
+        point.kind == :venue_event && (venue_step[point.ref] = index)
+        point.kind == :activation && (activation_step[point.ref] = index)
+    end
+    fills_by_decision = Dict{Int64, Vector{Tuple{Fill, Int64}}}()
+    for fill in fills
+        step = if fill.trigger == :activation_sweep
+            get(activation_step, fill.order_id, nothing)
+        else
+            get(venue_step, fill.trigger_sequence, nothing)
+        end
+        step === nothing && throw(
+            ErrorException(
+                "fill $(fill.fill_id) has no matching ledger step ($(fill.trigger) $(fill.trigger_sequence))",
+            ),
+        )
+        push!(get!(fills_by_decision, fill.decision_id, Tuple{Fill, Int64}[]), (fill, step))
+    end
+    orders_by_decision = Dict{Int64, Vector{PaperOrder}}()
+    for order in orders
+        push!(get!(orders_by_decision, order.decision_id, PaperOrder[]), order)
+    end
+    n = length(ledger)
+    suffix_min = Vector{Int64}(undef, n)
+    suffix_max = Vector{Int64}(undef, n)
+    suffix_dd = Vector{Int64}(undef, n)
+    suffix_count = Vector{Int64}(undef, n)
+    min_equity, max_equity, max_dd, count = typemax(Int64), typemin(Int64), Int64(0), Int64(0)
+    for index in n:-1:1
+        equity = ledger[index].equity_subunits
+        if equity !== nothing
+            min_equity = min(min_equity, equity)
+            max_equity = max(max_equity, equity)
+            count += 1
+        end
+        max_dd = max(max_dd, ledger[index].drawdown_subunits)
+        suffix_min[index] = min_equity
+        suffix_max[index] = max_equity
+        suffix_dd[index] = max_dd
+        suffix_count[index] = count
+    end
+    return _OutcomeView(
+        ledger,
+        suffix_min,
+        suffix_max,
+        suffix_dd,
+        suffix_count,
+        fills_by_decision,
+        orders_by_decision,
+        realized_by_fill,
+    )
+end
+
+_decision_fills(view::_OutcomeView, decision_id) =
+    get(view.fills_by_decision, decision_id, Tuple{Fill, Int64}[])
+
+_decision_orders(view::_OutcomeView, decision_id) =
+    get(view.orders_by_decision, decision_id, PaperOrder[])
 
 # Steps strictly after the decision step at which the horizon resolves; `nothing`
 # when the run ends first (recorded as a session-end fallback, never extrapolated).
@@ -160,8 +250,17 @@ function _horizon_end_step(ledger, spec::OutcomeHorizonSpec, decision_step::Int)
         end
         return nothing
     elseif spec.kind == :close
+        # "Close" means a position was opened and then flattened. A decision from
+        # flat stays at zero inventory until its order activates and fills, so the
+        # first scan for zero must wait until inventory has left flat.
+        opened = ledger[decision_step].inventory_lots != 0
         for index in (decision_step + 1):length(ledger)
-            ledger[index].inventory_lots == 0 && return index
+            inventory = ledger[index].inventory_lots
+            if opened
+                inventory == 0 && return index
+            elseif inventory != 0
+                opened = true
+            end
         end
         return nothing
     else
@@ -169,15 +268,39 @@ function _horizon_end_step(ledger, spec::OutcomeHorizonSpec, decision_step::Int)
     end
 end
 
+# Window min/max equity and max drawdown over ledger steps [decision_step, end_index].
+# The session-end case reads precomputed suffix arrays; bounded horizons scan the
+# window without allocating a copy.
+function _window_extremes(view::_OutcomeView, decision_step::Int, end_index::Int)
+    ledger = view.ledger
+    if end_index == length(ledger)
+        return (
+            view.suffix_min_equity[decision_step],
+            view.suffix_max_equity[decision_step],
+            view.suffix_max_drawdown[decision_step],
+            view.suffix_equity_count[decision_step],
+        )
+    end
+    min_equity, max_equity, max_dd, count = typemax(Int64), typemin(Int64), Int64(0), 0
+    for index in decision_step:end_index
+        equity = ledger[index].equity_subunits
+        if equity !== nothing
+            min_equity = min(min_equity, equity)
+            max_equity = max(max_equity, equity)
+            count += 1
+        end
+        max_dd = max(max_dd, ledger[index].drawdown_subunits)
+    end
+    return (min_equity, max_equity, max_dd, count)
+end
+
 function _horizon_outcome(
-    ledger,
-    fills,
-    realized_by_fill,
-    scale::ParityScale,
+    view::_OutcomeView,
     spec::OutcomeHorizonSpec,
     decision_step::Int,
     decision_id::Int64,
 )
+    ledger = view.ledger
     resolved = _horizon_end_step(ledger, spec, decision_step)
     fallback = resolved === nothing
     end_index = something(resolved, length(ledger))
@@ -189,11 +312,12 @@ function _horizon_outcome(
     return_ppm =
         pnl === nothing || start.equity_subunits == 0 ? nothing :
         Float64(Int128(pnl) * Int128(1_000_000)) / Float64(start.equity_subunits)
-    window_fills =
-        [f for f in fills if f.decision_id == decision_id && f.exchange_ts_ns <= finish.ts_ns]
+    # Only this decision's fills applied at ledger steps inside the outcome window;
+    # a same-nanosecond activation fill in a later step must not be counted.
+    window_fills = [f for (f, step) in _decision_fills(view, decision_id) if step <= end_index]
     realized = _checked_i64(
         sum(
-            (Int128(get(realized_by_fill, f.fill_id, Int64(0))) for f in window_fills);
+            (Int128(get(view.realized_by_fill, f.fill_id, Int64(0))) for f in window_fills);
             init = Int128(0),
         ),
         "decision realized pnl",
@@ -209,19 +333,13 @@ function _horizon_outcome(
         ),
         "decision net lots",
     )
-    equities = [
-        ledger[index].equity_subunits for
-        index in decision_step:end_index if ledger[index].equity_subunits !== nothing
-    ]
+    min_equity, max_equity, max_dd, equity_count = _window_extremes(view, decision_step, end_index)
     mae =
-        start.equity_subunits === nothing || length(equities) <= 1 ? nothing :
-        _checked_i64(Int128(minimum(equities)) - Int128(start.equity_subunits), "adverse excursion")
+        start.equity_subunits === nothing || equity_count <= 1 ? nothing :
+        _checked_i64(Int128(min_equity) - Int128(start.equity_subunits), "adverse excursion")
     mfe =
-        start.equity_subunits === nothing || length(equities) <= 1 ? nothing :
-        _checked_i64(
-            Int128(maximum(equities)) - Int128(start.equity_subunits),
-            "favorable excursion",
-        )
+        start.equity_subunits === nothing || equity_count <= 1 ? nothing :
+        _checked_i64(Int128(max_equity) - Int128(start.equity_subunits), "favorable excursion")
     return Dict{String, Any}(
         "name" => spec.name,
         "kind" => String(spec.kind),
@@ -238,56 +356,31 @@ function _horizon_outcome(
         "decision_fees_subunits" => fees,
         "decision_net_lots" => net_lots,
         "decision_fills" => length(window_fills),
+        "max_drawdown_subunits" => max_dd,
         "max_adverse_excursion_subunits" => mae,
         "max_favorable_excursion_subunits" => mfe,
     )
 end
 
-function _outcome_dict(
-    call,
-    records,
-    fills_all,
-    realized_by_fill,
-    ledger,
-    scale,
-    horizons,
-    decision_step,
-)
-    decision_fills = [f for f in fills_all if f.decision_id == call.decision_id]
-    status = _decision_status(call, records, decision_fills)
-    if status == "rejected"
+function _outcome_dict(call, records, view::_OutcomeView, horizons, decision_step)
+    decision_fills = [f for (f, _) in _decision_fills(view, call.decision_id)]
+    status =
+        _decision_status(call, records, decision_fills, _decision_orders(view, call.decision_id))
+    if status == "rejected" || status == "rejected_at_activation"
         # A rejected decision never traded; attaching equity deltas would fabricate PnL.
         return Dict{String, Any}("status" => status, "horizons" => Dict{String, Any}())
     end
     horizon_outcomes = Dict{String, Any}(
-        spec.name => _horizon_outcome(
-            ledger,
-            fills_all,
-            realized_by_fill,
-            scale,
-            spec,
-            decision_step,
-            call.decision_id,
-        ) for spec in horizons
+        spec.name => _horizon_outcome(view, spec, decision_step, call.decision_id) for
+        spec in horizons
     )
     return Dict{String, Any}("status" => status, "horizons" => horizon_outcomes)
 end
 
 # ── Row emitters ─────────────────────────────────────────────────────────────
 
-function _trajectory_row(
-    call,
-    phase,
-    records,
-    fills,
-    realized_by_fill,
-    ledger,
-    scale,
-    horizons,
-    decision_step,
-    run_id,
-)
-    point = ledger[decision_step]
+function _trajectory_row(call, phase, records, view::_OutcomeView, horizons, decision_step, run_id)
+    point = view.ledger[decision_step]
     return Dict{String, Any}(
         "record_type" => TRAJECTORY_RECORD_TYPE,
         "schema_version" => 1,
@@ -317,16 +410,7 @@ function _trajectory_row(
             "reported_inventory_lots" => call.reported_inventory_lots,
             "reported_cash_subunits" => call.reported_cash_subunits,
         ),
-        "outcome" => _outcome_dict(
-            call,
-            records,
-            fills,
-            realized_by_fill,
-            ledger,
-            scale,
-            horizons,
-            decision_step,
-        ),
+        "outcome" => _outcome_dict(call, records, view, horizons, decision_step),
     )
 end
 
@@ -350,7 +434,7 @@ function _prediction_row(call, phase, records, run_id)
 end
 
 function _snn_decision_target(call, status)
-    status == "rejected" && return "rejected"
+    (status == "rejected" || status == "rejected_at_activation") && return "rejected"
     submits = [i for i in call.intents if i isa OrderIntent]
     isempty(submits) && return "hold"
     sides = unique(i.side for i in submits)
@@ -362,17 +446,15 @@ function _snn_row(
     call,
     phase,
     records,
-    fills,
-    realized_by_fill,
-    ledger,
-    scale,
+    view::_OutcomeView,
     horizons,
     decision_step,
     normalizer,
     run_id,
 )
+    decision_fills = [f for (f, _) in _decision_fills(view, call.decision_id)]
     status =
-        _decision_status(call, records, [f for f in fills if f.decision_id == call.decision_id])
+        _decision_status(call, records, decision_fills, _decision_orders(view, call.decision_id))
     features = nothing
     if call.features !== nothing && normalizer.fitted
         frame = FeatureFrame(FeatureRow[call.features])
@@ -380,17 +462,9 @@ function _snn_row(
         features = _feature_vector(only(frame))
     end
     outcomes = Dict{String, Any}()
-    if status != "rejected"
+    if status != "rejected" && status != "rejected_at_activation"
         for spec in horizons
-            outcome = _horizon_outcome(
-                ledger,
-                fills,
-                realized_by_fill,
-                scale,
-                spec,
-                decision_step,
-                call.decision_id,
-            )
+            outcome = _horizon_outcome(view, spec, decision_step, call.decision_id)
             outcomes[spec.name] = outcome["paper_pnl_subunits"]
         end
     end

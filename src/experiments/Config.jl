@@ -17,6 +17,9 @@ struct OutcomeHorizonSpec
     ns::Union{Nothing, Int64}
 end
 
+OutcomeHorizonSpec(name::AbstractString, kind::Symbol; n = nothing, ns = nothing) =
+    OutcomeHorizonSpec(name, kind, n, ns)
+
 """
     ExperimentConfig
 

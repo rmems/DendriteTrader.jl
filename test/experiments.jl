@@ -260,7 +260,7 @@ end
                   haskey(row, "decision") &&
                   haskey(row, "paper_account") &&
                   haskey(row, "outcome")
-            @test row["phase"] in ("train", "embargo", "validation", "test")
+            @test row["phase"] in ("train", "embargo", "validation", "test", "unused")
         end
 
         # With evaluate_on="test", every non-test row is a no-action observation.
@@ -394,6 +394,13 @@ end
         for (name, hash) in written["artifacts"]
             @test bytes2hex(sha256(read(joinpath(outdir, name)))) == hash
         end
+        # The manifest's trajectory hash covers the exact file bytes, and the
+        # result object is not mutated by the write.
+        @test written["hashes"]["trajectory_sha256"] ==
+              bytes2hex(sha256(read(joinpath(outdir, "trajectory.jsonl"))))
+        @test isempty(result.manifest["artifacts"])
+        normalization = JSON.parsefile(joinpath(outdir, "normalization.json"))
+        @test haskey(normalization["parameters"], "mean_corrections")
         metrics = JSON.parsefile(joinpath(outdir, "metrics.json"))
         @test metrics["run_id"] == result.run_id
         @test metrics["decision_calls"] == 24
@@ -486,4 +493,48 @@ end
         # External policy without decide is rejected.
         @test_throws ArgumentError run_experiment(load_experiment_config(config_path))
     end
+end
+
+@testset "outcome labeling edge cases" begin
+    # A close horizon must wait for an entry: from flat, a decision's order
+    # activates and fills later, so zero inventory before the fill is not a close.
+    lp(step, inventory) = LedgerPoint(
+        Int64(step),
+        Int64(step * 10),
+        :venue_event,
+        Int64(step),
+        Int64(0),
+        Int64(inventory),
+        Int64(0),
+        Int64(0),
+        Int64(0),
+        nothing,
+        :missing,
+        nothing,
+        nothing,
+        Int64(0),
+        Int64(0),
+        0,
+    )
+    close_spec = OutcomeHorizonSpec("close", :close; n = nothing, ns = nothing)
+    ledger = [lp(1, 0), lp(2, 0), lp(3, 2), lp(4, 0)]
+    @test DendriteTrader.Experiments._horizon_end_step(ledger, close_spec, 1) == 4
+    # Already holding at the decision: the next flat step is the close.
+    ledger_holding = [lp(1, 2), lp(2, 0), lp(3, 1), lp(4, 0)]
+    @test DendriteTrader.Experiments._horizon_end_step(ledger_holding, close_spec, 1) == 2
+    # Never leaves flat: falls back to session end.
+    ledger_flat = [lp(1, 0), lp(2, 0)]
+    @test DendriteTrader.Experiments._horizon_end_step(ledger_flat, close_spec, 1) === nothing
+
+    # Split sizes that do not cover the session leave an "unused" tail rather
+    # than mislabeled embargo events.
+    split =
+        chronological_split(26; train_size = 10, validation_size = 4, test_size = 6, embargo = 2)
+    phase = DendriteTrader.Experiments._phase_tags(split, 26)
+    @test phase[1:10] == fill(:train, 10)
+    @test phase[11:12] == fill(:embargo, 2)
+    @test phase[13:16] == fill(:validation, 4)
+    @test phase[17:18] == fill(:embargo, 2)
+    @test phase[19:24] == fill(:test, 6)
+    @test phase[25:26] == fill(:unused, 2)
 end
