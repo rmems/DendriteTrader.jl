@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `ExecutionEngine` serializes `execute_signal!` with `portfolio_risk`, `fill_rate`,
+  and `events` under a `state_lock`, so concurrent trades cannot jointly exceed
+  `max_portfolio_exposure` through stale checks (RM-2114, #101). `events` returns
+  a snapshot copy. Direct access to mutable engine fields is not concurrency-safe.
+
 ### Documentation
 
 - `CLAUDE.md`: deduplicate agent gotchas and re-verify commands at `4a57690` (RM-2194).

@@ -925,6 +925,73 @@ include("spikes.jl")
         end
     end
 
+    @testset "ExecutionEngine — concurrent execute_signal!" begin
+        sig(ticker, price, side) = TradeSignal(
+            Dict(
+                "ticker" => ticker,
+                "side" => side,
+                "price" => price,
+                "quantity" => 1.0,
+                "confidence" => 0.90,
+                "timestamp_ns" => 0,
+            ),
+        )
+        submit_fill!(engine, ticker, price, side, units) = execute_signal!(
+            engine,
+            sig(ticker, price, side),
+            10_000.0;
+            position_units_override = units,
+        )
+
+        # Two tickers, each 10 x 100 = 1_000 notional, cap 1_500: at most one
+        # can execute. The check and the position update are one critical
+        # section, so both cannot sneak in through a stale exposure read.
+        engine = ExecutionEngine(max_portfolio_exposure = 1_500.0)
+        decisions = Vector{Union{ExecutionDecision, Nothing}}(nothing, 2)
+        @sync begin
+            Threads.@spawn decisions[1] = submit_fill!(engine, "MARKET-A", 100.0, "BUY", 10.0)
+            Threads.@spawn decisions[2] = submit_fill!(engine, "MARKET-B", 100.0, "BUY", 10.0)
+        end
+        @test all(d -> d isa ExecutionDecision, decisions)
+        @test count(d -> d.executed, decisions) == 1
+        @test count(d -> !d.executed && occursin("portfolio exposure", d.reason), decisions) == 1
+        @test portfolio_risk(engine) <= 1_500.0 + 1e-9
+        @test engine.total_signals == 2
+        @test engine.executed_signals + engine.rejected_signals == engine.total_signals
+        @test length(events(engine)) == engine.total_signals
+
+        # Concurrent executors and readers (exposure, fill rate, event snapshot)
+        # plus a log flush must not corrupt counters, positions, or the log.
+        mktempdir() do dir
+            path = joinpath(dir, "events.jsonl")
+            busy = ExecutionEngine(max_portfolio_exposure = 5_000.0, log_file = path)
+            n = 12
+            execs = Vector{Union{ExecutionDecision, Nothing}}(nothing, n)
+            @sync begin
+                for i in 1:n
+                    ticker = "MARKET-$(mod1(i, 4))"
+                    Threads.@spawn execs[i] = submit_fill!(busy, ticker, 100.0, "BUY", 5.0)
+                end
+                for _ in 1:n
+                    Threads.@spawn begin
+                        portfolio_risk(busy)
+                        fill_rate(busy)
+                        events(busy)
+                    end
+                end
+                Threads.@spawn DendriteTrader.flush_log!(busy)
+            end
+            @test all(d -> d isa ExecutionDecision, execs)
+            @test busy.total_signals == n
+            @test busy.executed_signals + busy.rejected_signals == n
+            @test length(events(busy)) == n
+            @test portfolio_risk(busy) <= 5_000.0 + 1e-9
+            @test 0.0 <= fill_rate(busy) <= 1.0
+            DendriteTrader.close_log!(busy)
+            @test isfile(path)
+        end
+    end
+
     @testset "PriceCache" begin
         @testset "constructor with default TTL" begin
             cache = PriceCache()
