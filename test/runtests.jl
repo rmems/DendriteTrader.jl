@@ -855,6 +855,51 @@ include("spikes.jl")
         @test dec_fall.executed
         @test portfolio_risk(falling) ≈ 1_000.0
 
+        # #111: a reduction at a risen price must not be rejected. Cap 1_500;
+        # buy 10 @ 100 (exposure 1_000); a sell of 3 @ 300 projects
+        # 1_000 - 1_000 + 7×300 = 2_100 > 1_500, but |position| falls 10 → 7 and
+        # the side does not flip, so the order is exempt and the book can sit
+        # above the cap — rejecting it would trap the position.
+        risen = ExecutionEngine(max_position_size = 10.0, max_portfolio_exposure = 1_500.0)
+        @test sig10(risen, "MARKET-A", 100.0, "BUY").executed
+        dec_reduce = execute_signal!(
+            risen,
+            sig("MARKET-A", 300.0, "SELL"),
+            10_000.0;
+            position_units_override = 3.0,
+        )
+        @test dec_reduce.executed
+        @test risen.positions["MARKET-A"] ≈ 7.0
+        @test portfolio_risk(risen) ≈ 2_100.0
+
+        # A sell past flat flips the side and is still checked: 10 long @ 100,
+        # sell 20 @ 300 leaves |-10| × 300 = 3_000 > 1_500 → portfolio_reject.
+        # max_position_size stays Inf so the 20-unit override reaches the cap.
+        flip = ExecutionEngine(max_portfolio_exposure = 1_500.0)
+        @test sig10(flip, "MARKET-A", 100.0, "BUY").executed
+        dec_flip = execute_signal!(
+            flip,
+            sig("MARKET-A", 300.0, "SELL"),
+            10_000.0;
+            position_units_override = 20.0,
+        )
+        @test !dec_flip.executed
+        @test occursin("portfolio exposure", dec_flip.reason)
+        @test flip.events[end].event_type == "portfolio_reject"
+        @test flip.positions["MARKET-A"] ≈ 10.0
+
+        # A flip that stays under the cap still executes: sell 12 @ 300 leaves
+        # |-2| × 300 = 600 ≤ 1_500 → executed, position -2 marked at 300.
+        dec_flip_ok = execute_signal!(
+            flip,
+            sig("MARKET-A", 300.0, "SELL"),
+            10_000.0;
+            position_units_override = 12.0,
+        )
+        @test dec_flip_ok.executed
+        @test flip.positions["MARKET-A"] ≈ -2.0
+        @test portfolio_risk(flip) ≈ 600.0
+
         # Constructor rejects NaN and non-positive caps but allows Inf.
         @test_throws ArgumentError ExecutionEngine(max_portfolio_exposure = NaN)
         @test_throws ArgumentError ExecutionEngine(max_portfolio_exposure = -1.0)

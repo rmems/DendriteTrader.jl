@@ -65,9 +65,6 @@ patterns; fix them only in a scoped change with tests.
   Since #109 the default position cap is relative (`max_position_fraction = 1.0`,
   notional over balance) and `max_position_size` defaults to `Inf` (no absolute cap).
   Every cap violation rejects with a reason; nothing is shrunk.
-- `max_portfolio_exposure` in `execute_signal!` compares gross notional at the new
-  price, so a price rise can reject an order that only reduces a position (#111). The
-  relative position cap exempts reduce-only orders and does not share this problem.
 
 ## Verified commands
 

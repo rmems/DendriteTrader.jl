@@ -879,7 +879,9 @@ Every rejection increments `rejected_signals`, records a `SignalEvent`, and retu
   When both caps are set, both apply and the absolute cap is checked first. Nothing is
   shrunk to a cap: the whole order is rejected and no position changes.
 - `zero_reject`: the Kelly fraction is zero (no edge), so the sized position is zero.
-- `portfolio_reject`: the projected gross exposure would exceed `max_portfolio_exposure`.
+- `portfolio_reject`: the projected gross exposure would exceed
+  `max_portfolio_exposure`. Orders that only reduce the existing position in
+  the ticker are exempt; a flip past flat is checked.
 
 An invalid `position_units_override` (non-finite, negative, above `max_position_size`,
 or, for an order that does not only reduce the position, with notional above
@@ -1056,14 +1058,18 @@ function execute_signal!(
     applied_fraction = account_balance <= 0.0 ? 0.0 : (units * signal.price) / account_balance
 
     # Portfolio exposure cap: gross notional (Σ |quantity| × last trade price)
-    # after applying this signal must not exceed the cap. Signals that only
-    # reduce the existing position in the same ticker lower exposure and are
-    # always allowed.
+    # after applying this signal must not exceed the cap. An order that only
+    # reduces the existing position in this ticker (no increase, no side flip)
+    # is exempt, matching the max_position_fraction exemption above: the
+    # projection revalues the remaining units at the new price, so a price rise
+    # can put the projected exposure over the cap even while |position| falls,
+    # and a cap that rejects a reduction would trap the position (#111).
     projected_quantity = signal.side == Buy ? current + units : current - units
     prior_ticker_exposure = abs(current) * get(engine.last_prices, signal.ticker, 0.0)
     projected_ticker_exposure = abs(projected_quantity) * price
     projected_exposure = portfolio_risk(engine) - prior_ticker_exposure + projected_ticker_exposure
-    if projected_exposure > engine.max_portfolio_exposure
+    if !_reduces_position(current, units, signal.side) &&
+       projected_exposure > engine.max_portfolio_exposure
         engine.rejected_signals += 1
         reason = "portfolio exposure $(projected_exposure) would exceed cap $(engine.max_portfolio_exposure)"
         _record_event!(

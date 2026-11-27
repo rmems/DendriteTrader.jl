@@ -124,6 +124,17 @@ eight-argument form is kept); `DEFAULT_MAX_POSITION_FRACTION` is a new export; a
   - Added `license` field to `Project.toml` with SPDX expression.
   - This change is for maximum adoption across research, hardware, BCI, HFT, and bindings.
 
+### Fixed
+
+- `execute_signal!` no longer rejects a position-reducing order through
+  `max_portfolio_exposure` after a price rise (RM-2221, #111). The projected-exposure
+  check revalues the remaining units at the signal price, so a sell that shrank
+  `|position|` could still project above the cap (cap `1500`, 10 long @ `100`, sell 3
+  @ `300` projected `2100`). Orders that only reduce the position in the ticker —
+  no increase, no side flip — are now exempt, matching the documented behaviour and
+  the `max_position_fraction` exemption. Orders that grow or flip the position are
+  still checked, and a flip under the cap still executes.
+
 See issues #10 and #11.
 
 ## [0.1.0] - 2026-07-05
