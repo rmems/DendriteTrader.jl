@@ -8,3 +8,4 @@
 .worktrees/
 Manifest.toml
 docs/build/
+experiments/runs/
