@@ -55,9 +55,6 @@ patterns; fix them only in a scoped change with tests.
   (rule 2). Treat its results as zero-latency diagnostics.
 - `RidgeClassifier` prediction clamps standardized features to ±1e6
   (`_standardized_features` in `src/models/Baselines.jl`).
-- `walk_forward_splits` (`src/experiments/Splits.jl`) counts `embargo` and `max_horizon`
-  in rows, not event sequences, so the embargo is insufficient when several rows share
-  an event (rules 3 and 5; see the `@test_broken` in `test/leakage_splits_labels.jl`).
 - There is no experiment runner or manifest writer yet (rule 8); see Tasks 6-7 of
   `docs/superpowers/plans/2026-09-20-snn-hft-experiments.md`.
 - Default-config backtests and engine runs from before #109 used Kelly sizes silently
@@ -76,7 +73,7 @@ docs-only diff (Julia 1.10.11, Linux, CPU only). CI uses Julia 1.13 per `ci.yml`
 
 | Purpose | Command | Status at `4a57690` |
 |---------|---------|---------------------|
-| Full test suite | `julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'` | Passes (`Testing DendriteTrader tests passed`): root `DendriteTrader` testset 531/531; `Paper simulation (RM-1864)` 23159 pass + 1 expected `@test_broken`; `walk_forward_splits leakage` 7 pass + 2 expected `@test_broken` (~4 min cold including precompilation) |
+| Full test suite | `julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'` | Passes (`Testing DendriteTrader tests passed`): root `DendriteTrader` testset 531/531; `Paper simulation (RM-1864)` 23159 pass + 1 expected `@test_broken`; `walk_forward_splits leakage` canaries pass (sequence-aware embargo, #110) (~4 min cold including precompilation) |
 | Fast test loop | `julia --startup-file=no --project=. test/runtests.jl` | Passes (~2 min warm) |
 | Docs build | `DOCUMENTER_TEST=true julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'` then `DOCUMENTER_TEST=true julia --project=docs docs/make.jl` | Builds. The first command rewrites `docs/Project.toml` with a local path source; do not commit that |
 | Format (non-mutating) | `julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.add(name="JuliaFormatter", version="2"); using JuliaFormatter; exit(format("."; overwrite=false) ? 0 : 1)'` | Passes (exit 0; JuliaFormatter 2.14.12). Same check the CI `JuliaFormatter` job runs |
